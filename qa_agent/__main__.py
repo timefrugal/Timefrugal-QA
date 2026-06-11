@@ -9,6 +9,14 @@ import argparse
 import os
 import sys
 
+# Windows PowerShell defaults to cp1252; reconfigure to UTF-8 so rich can render emoji
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 from qa_agent.agent import run
 
 

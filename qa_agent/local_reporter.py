@@ -14,7 +14,8 @@ from qa_agent import config
 from qa_agent.ai_review import AIReview
 from qa_agent.static_analysis import AnalysisResults
 
-console = Console()
+# legacy_windows=False forces ANSI mode on Windows, avoiding cp1252 UnicodeEncodeError with emoji
+console = Console(legacy_windows=False)
 
 SEVERITY_STYLE = {
     "CRITICAL": "bold red",
