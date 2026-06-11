@@ -50,8 +50,7 @@ jobs:
       - name: Install Timefrugal-QA agent
         run: |
           pip install --upgrade pip
-          # TIMEFRUGAL_QA_PAT: fine-grained PAT with Contents:read on timefrugal/Timefrugal-QA
-          pip install git+https://x-access-token:${{ secrets.TIMEFRUGAL_QA_PAT }}@github.com/timefrugal/Timefrugal-QA.git@main
+          pip install git+https://github.com/timefrugal/Timefrugal-QA.git@main
 
       - name: Install analysis tools
         run: pip install bandit semgrep pylint mypy radon pip-audit
