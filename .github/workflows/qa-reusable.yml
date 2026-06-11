@@ -46,23 +46,23 @@ jobs:
       statuses: write            # to set commit status checks
 
     steps:
-      # ── Checkout ────────────────────────────────────────────────────
+      # -- Checkout ----------------------------------------------------
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0         # Full history needed for git diff
 
-      # ── Fetch base branch for diffing ────────────────────────────────
+      # -- Fetch base branch for diffing --------------------------------
       - name: Fetch base branch
         run: git fetch origin ${{ inputs.base-ref }} --depth=50
 
-      # ── Python setup ────────────────────────────────────────────────
+      # -- Python setup ------------------------------------------------
       - name: Set up Python ${{ inputs.python-version }}
         uses: actions/setup-python@v5
         with:
           python-version: ${{ inputs.python-version }}
 
-      # ── Cache pip dependencies ───────────────────────────────────────
+      # -- Cache pip dependencies --------------------------------------─
       - name: Cache pip
         uses: actions/cache@v4
         with:
@@ -71,19 +71,19 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-pip-timefrugal-qa-
 
-      # ── Install Timefrugal-QA agent ──────────────────────────────────
+      # -- Install Timefrugal-QA agent ----------------------------------
       - name: Install Timefrugal-QA agent
         run: |
           pip install --upgrade pip
           # Install the QA agent from the central repo
           pip install git+https://github.com/Timefrugal/Timefrugal-QA.git@main
 
-      # ── Install open-source analysis tools ──────────────────────────
+      # -- Install open-source analysis tools --------------------------
       - name: Install analysis tools
         run: |
           pip install bandit semgrep pylint mypy radon pip-audit
 
-      # ── Install target repo dependencies (if present) ────────────────
+      # -- Install target repo dependencies (if present) ----------------
       - name: Install project dependencies
         run: |
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
@@ -91,7 +91,7 @@ jobs:
           if [ -f pyproject.toml ]; then pip install -e ".[dev]" 2>/dev/null || pip install -e . 2>/dev/null || true; fi
         continue-on-error: true
 
-      # ── Run Timefrugal-QA ────────────────────────────────────────────
+      # -- Run Timefrugal-QA --------------------------------------------
       - name: Run Timefrugal-QA
         id: qa
         env:
@@ -112,7 +112,7 @@ jobs:
         # Exit code 1 = blocking issues found → fail the workflow
         # Exit code 0 = all clear
 
-      # ── Upload QA report as artifact ────────────────────────────────
+      # -- Upload QA report as artifact --------------------------------
       - name: Upload QA report
         if: always()
         uses: actions/upload-artifact@v4
