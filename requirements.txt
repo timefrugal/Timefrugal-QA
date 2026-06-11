@@ -1,0 +1,21 @@
+# Timefrugal-QA Agent Dependencies
+# All tools are free and open-source
+
+# GitHub Models API (OpenAI-compatible, free with GitHub account)
+openai>=1.30.0
+
+# Static Analysis & Security
+bandit>=1.7.8              # Python security linter
+semgrep>=1.70.0            # SAST / pattern-based scanner (free community rules)
+pylint>=3.2.0              # Code quality and bug detection
+mypy>=1.10.0               # Static type checker
+radon>=6.0.1               # Code complexity metrics
+
+# Dependency Vulnerability Scanning
+pip-audit>=2.7.3           # Audits installed packages against PyPI advisory DB
+
+# GitHub API
+requests>=2.31.0           # HTTP calls to GitHub REST API
+
+# Output / Reporting
+rich>=13.7.0               # Beautiful terminal output (local mode)

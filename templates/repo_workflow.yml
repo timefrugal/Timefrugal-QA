@@ -1,0 +1,33 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Timefrugal-QA — Per-repo caller workflow
+#
+# INSTRUCTIONS:
+#   1. Copy this file to your repo at: .github/workflows/qa.yml
+#   2. That's it. No secrets or additional config needed.
+#
+# The workflow calls the central reusable workflow in Timefrugal/Timefrugal-QA,
+# so all improvements to the QA agent are automatically picked up by every repo.
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: Timefrugal-QA
+
+on:
+  pull_request:
+    branches: [ main, master, develop ]
+    types: [ opened, synchronize, reopened ]
+
+# Prevent parallel QA runs on the same PR branch
+concurrency:
+  group: timefrugal-qa-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  qa:
+    name: QA Review
+    uses: Timefrugal/Timefrugal-QA/.github/workflows/qa-reusable.yml@main
+    secrets: inherit
+    with:
+      python-version: "3.11"   # Change to match your project's Python version
+      base-ref: "main"          # Change to "master" or "develop" if needed
+      ai-model: "gpt-4o-mini"  # Free GitHub Models AI
+      generate-tests: true

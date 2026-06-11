@@ -1,0 +1,273 @@
+"""
+AI-powered code review using GitHub Models (free).
+Uses the OpenAI-compatible endpoint at models.inference.ai.azure.com
+with the user's GITHUB_TOKEN — no extra billing.
+"""
+import json
+import os
+from dataclasses import dataclass, field
+from typing import List, Optional
+
+from openai import OpenAI
+
+from qa_agent import config
+from qa_agent.static_analysis import AnalysisResults
+
+
+@dataclass
+class AIFinding:
+    severity: str
+    category: str       # "bug" | "security" | "architecture" | "design" | "performance" | "test"
+    file: str
+    line: int
+    message: str
+    suggestion: str
+
+
+@dataclass
+class AIReview:
+    summary: str = ""
+    findings: List[AIFinding] = field(default_factory=list)
+    generated_tests: str = ""      # pytest code block
+    architecture_notes: str = ""
+    errors: List[str] = field(default_factory=list)
+
+    @property
+    def has_blocking_issues(self) -> bool:
+        return any(
+            f.severity in (config.SEVERITY_CRITICAL, config.SEVERITY_HIGH)
+            for f in self.findings
+        )
+
+
+# ──────────────────────────────────────────────
+# Prompts
+# ──────────────────────────────────────────────
+
+SYSTEM_PROMPT = """You are a senior software engineer with 15+ years of experience reviewing Python code.
+Your role:
+1. Identify bugs, logic errors, and edge cases
+2. Spot security vulnerabilities (injection, auth bypass, insecure defaults, secrets in code, etc.)
+3. Evaluate architecture and design — suggest improvements where patterns are wrong or fragile
+4. Flag performance bottlenecks
+5. Note missing or inadequate error handling
+6. Assess testability
+
+Respond ONLY in valid JSON matching this schema:
+{
+  "summary": "<2-3 sentence overall assessment>",
+  "architecture_notes": "<paragraph on design/architecture observations, empty string if none>",
+  "findings": [
+    {
+      "severity": "CRITICAL|HIGH|MEDIUM|LOW|INFO",
+      "category": "bug|security|architecture|design|performance|quality",
+      "file": "<filename>",
+      "line": <int or 0 if unknown>,
+      "message": "<what is wrong>",
+      "suggestion": "<concrete fix or improvement>"
+    }
+  ]
+}
+Be precise and actionable. Do not hallucinate line numbers — use 0 if uncertain.
+"""
+
+TEST_SYSTEM_PROMPT = """You are a senior Python test engineer with 15+ years of experience.
+Generate comprehensive pytest test cases for the provided Python code.
+
+Requirements:
+- Use pytest and standard library only (no extra test deps unless absolutely necessary)
+- Cover: happy paths, edge cases, error/exception paths, boundary conditions
+- Include mocks where external dependencies exist (use unittest.mock)
+- Each test must have a clear docstring explaining what it tests
+- Tests must be runnable as-is (correct imports, no placeholders)
+
+Respond with ONLY the raw Python test code, no markdown fences, no explanation.
+Start with the import block.
+"""
+
+
+# ──────────────────────────────────────────────
+# Client factory
+# ──────────────────────────────────────────────
+
+def _get_client() -> OpenAI:
+    token = config.GITHUB_TOKEN
+    if not token:
+        raise ValueError(
+            "GITHUB_TOKEN environment variable not set. "
+            "Required to access GitHub Models free AI."
+        )
+    return OpenAI(
+        base_url=config.GITHUB_MODELS_BASE_URL,
+        api_key=token,
+    )
+
+
+# ──────────────────────────────────────────────
+# Review functions
+# ──────────────────────────────────────────────
+
+def review_code(
+    file_contents: dict[str, str],
+    static_results: AnalysisResults,
+    repo_name: str = "",
+) -> AIReview:
+    """
+    Send changed file contents + static analysis findings to GitHub Models AI.
+    Returns structured AIReview.
+    """
+    review = AIReview()
+
+    if not file_contents:
+        review.errors.append("No file contents provided for AI review.")
+        return review
+
+    try:
+        client = _get_client()
+    except ValueError as e:
+        review.errors.append(str(e))
+        return review
+
+    # Build the user message
+    code_sections = []
+    for filepath, content in file_contents.items():
+        # Truncate very large files to stay within token limits
+        truncated = content[:6000] + ("\n... [truncated]" if len(content) > 6000 else "")
+        code_sections.append(f"### File: {filepath}\n```python\n{truncated}\n```")
+
+    static_summary = _format_static_for_ai(static_results)
+
+    user_msg = f"""Repository: {repo_name or "unknown"}
+
+## Changed Files
+{chr(10).join(code_sections)}
+
+## Static Analysis Pre-scan Results
+{static_summary}
+
+Please perform a thorough code review of the changed files above.
+"""
+
+    try:
+        response = client.chat.completions.create(
+            model=config.AI_MODEL,
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": user_msg},
+            ],
+            max_tokens=config.AI_MAX_TOKENS,
+            temperature=0.1,
+        )
+        raw = response.choices[0].message.content or "{}"
+        # Strip markdown fences if model wraps JSON
+        raw = raw.strip()
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+        data = json.loads(raw)
+    except json.JSONDecodeError as e:
+        review.errors.append(f"AI response was not valid JSON: {e}")
+        return review
+    except Exception as e:
+        review.errors.append(f"GitHub Models API error: {e}")
+        return review
+
+    review.summary = data.get("summary", "")
+    review.architecture_notes = data.get("architecture_notes", "")
+
+    for item in data.get("findings", []):
+        review.findings.append(AIFinding(
+            severity=item.get("severity", config.SEVERITY_INFO),
+            category=item.get("category", "quality"),
+            file=item.get("file", ""),
+            line=item.get("line", 0),
+            message=item.get("message", ""),
+            suggestion=item.get("suggestion", ""),
+        ))
+
+    return review
+
+
+def generate_tests(
+    file_contents: dict[str, str],
+    existing_test_files: Optional[dict[str, str]] = None,
+) -> str:
+    """
+    Generate pytest test cases for the provided Python files.
+    Returns a string of Python test code.
+    """
+    if not file_contents:
+        return ""
+
+    try:
+        client = _get_client()
+    except ValueError as e:
+        return f"# Error: {e}\n"
+
+    code_sections = []
+    for filepath, content in file_contents.items():
+        truncated = content[:5000] + ("\n... [truncated]" if len(content) > 5000 else "")
+        code_sections.append(f"### Source: {filepath}\n```python\n{truncated}\n```")
+
+    existing_sections = []
+    if existing_test_files:
+        for filepath, content in existing_test_files.items():
+            truncated = content[:2000] + ("\n... [truncated]" if len(content) > 2000 else "")
+            existing_sections.append(
+                f"### Existing tests: {filepath}\n```python\n{truncated}\n```"
+            )
+
+    user_msg = f"""## Source Code to Test
+{chr(10).join(code_sections)}
+"""
+    if existing_sections:
+        user_msg += f"\n## Existing Tests (do not duplicate these)\n{chr(10).join(existing_sections)}\n"
+
+    user_msg += "\nGenerate new comprehensive pytest test cases for the source code above."
+
+    try:
+        response = client.chat.completions.create(
+            model=config.AI_MODEL,
+            messages=[
+                {"role": "system", "content": TEST_SYSTEM_PROMPT},
+                {"role": "user", "content": user_msg},
+            ],
+            max_tokens=config.AI_MAX_TOKENS,
+            temperature=0.1,
+        )
+        test_code = response.choices[0].message.content or ""
+        # Strip markdown fences if present
+        test_code = test_code.strip()
+        if test_code.startswith("```"):
+            parts = test_code.split("```")
+            test_code = parts[1]
+            if test_code.startswith("python"):
+                test_code = test_code[6:]
+        return test_code.strip()
+    except Exception as e:
+        return f"# Error generating tests: {e}\n"
+
+
+# ──────────────────────────────────────────────
+# Helpers
+# ──────────────────────────────────────────────
+
+def _format_static_for_ai(results: AnalysisResults) -> str:
+    if not results.findings:
+        return "No issues found by static analysis tools."
+
+    lines = []
+    summary = results.summary()
+    lines.append(
+        f"Findings: CRITICAL={summary['CRITICAL']}, HIGH={summary['HIGH']}, "
+        f"MEDIUM={summary['MEDIUM']}, LOW={summary['LOW']}"
+    )
+    # Show top findings only (cap at 20 to stay within token budget)
+    top = sorted(
+        results.findings,
+        key=lambda f: ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"].index(f.severity)
+    )[:20]
+    for f in top:
+        lines.append(f"- [{f.severity}] {f.tool} | {f.file}:{f.line} | {f.message}")
+    return "\n".join(lines)
