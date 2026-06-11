@@ -16,6 +16,7 @@ permissions:
   contents: read
   pull-requests: write
   statuses: write
+  models: read
 
 concurrency:
   group: timefrugal-qa-${{ github.ref }}
@@ -48,11 +49,8 @@ jobs:
 
       - name: Install Timefrugal-QA agent
         run: |
-          # actions/checkout sets a credential extraheader for this repo.
-          # Clear it so pip can clone the public Timefrugal-QA repo without auth errors.
-          git config --global --unset-all url."https://github.com/".extraheader || true
           pip install --upgrade pip
-          pip install git+https://github.com/timefrugal/Timefrugal-QA.git@main
+          pip install git+https://x-access-token:${{ github.token }}@github.com/timefrugal/Timefrugal-QA.git@main
 
       - name: Install analysis tools
         run: pip install bandit semgrep pylint mypy radon pip-audit
