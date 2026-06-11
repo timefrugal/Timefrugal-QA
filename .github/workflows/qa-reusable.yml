@@ -1,5 +1,5 @@
 # Timefrugal-QA Reusable Workflow
-# ─────────────────────────────────────────────────────────────────────────────
+#
 # This is the CENTRAL workflow stored in github.com/Timefrugal/Timefrugal-QA.
 # Other repos call it with:
 #
@@ -8,9 +8,8 @@
 #       uses: Timefrugal/Timefrugal-QA/.github/workflows/qa-reusable.yml@main
 #       secrets: inherit
 #
-# The workflow uses GitHub Models (free AI) via the built-in GITHUB_TOKEN —
+# The workflow uses GitHub Models (free AI) via the built-in GITHUB_TOKEN --
 # no external API keys or paid services required.
-# ─────────────────────────────────────────────────────────────────────────────
 
 name: Timefrugal-QA (Reusable)
 

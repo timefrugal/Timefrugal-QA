@@ -1,5 +1,4 @@
-# ─────────────────────────────────────────────────────────────────────────────
-# Timefrugal-QA — Per-repo caller workflow
+# Timefrugal-QA -- Per-repo caller workflow
 #
 # INSTRUCTIONS:
 #   1. Copy this file to your repo at: .github/workflows/qa.yml
@@ -7,7 +6,6 @@
 #
 # The workflow calls the central reusable workflow in Timefrugal/Timefrugal-QA,
 # so all improvements to the QA agent are automatically picked up by every repo.
-# ─────────────────────────────────────────────────────────────────────────────
 
 name: Timefrugal-QA
 
