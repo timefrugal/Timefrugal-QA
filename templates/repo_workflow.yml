@@ -15,6 +15,11 @@ on:
     types: [ opened, synchronize, reopened ]
 
 # Prevent parallel QA runs on the same PR branch
+permissions:
+  contents: read
+  pull-requests: write
+  statuses: write
+
 concurrency:
   group: timefrugal-qa-${{ github.ref }}
   cancel-in-progress: true
@@ -22,7 +27,7 @@ concurrency:
 jobs:
   qa:
     name: QA Review
-    uses: Timefrugal/Timefrugal-QA/.github/workflows/qa-reusable.yml@main
+    uses: timefrugal/Timefrugal-QA/.github/workflows/qa-reusable.yml@main
     secrets: inherit
     with:
       python-version: "3.11"   # Change to match your project's Python version
