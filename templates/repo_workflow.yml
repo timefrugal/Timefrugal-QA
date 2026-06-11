@@ -1,11 +1,9 @@
-# Timefrugal-QA -- Per-repo caller workflow
+# Timefrugal-QA -- AI-powered code review
+# Installs the agent from github.com/timefrugal/Timefrugal-QA and runs it.
+# All logic improvements are picked up automatically via pip install.
 #
-# INSTRUCTIONS:
-#   1. Copy this file to your repo at: .github/workflows/qa.yml
-#   2. That's it. No secrets or additional config needed.
-#
-# The workflow calls the central reusable workflow in Timefrugal/Timefrugal-QA,
-# so all improvements to the QA agent are automatically picked up by every repo.
+# NOTE: This workflow is intentionally self-contained (not a reusable workflow call)
+# so it works with both public and private repositories.
 
 name: Timefrugal-QA
 
@@ -14,7 +12,6 @@ on:
     branches: [ main, master, develop ]
     types: [ opened, synchronize, reopened ]
 
-# Prevent parallel QA runs on the same PR branch
 permissions:
   contents: read
   pull-requests: write
@@ -25,12 +22,62 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  qa:
-    name: QA Review
-    uses: timefrugal/Timefrugal-QA/.github/workflows/qa-reusable.yml@main
-    secrets: inherit
-    with:
-      python-version: "3.11"   # Change to match your project's Python version
-      base-ref: "main"          # Change to "master" or "develop" if needed
-      ai-model: "gpt-4o-mini"  # Free GitHub Models AI
-      generate-tests: true
+  qa-review:
+    name: AI QA Review
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch base branch
+        run: git fetch origin ${{ github.base_ref }} --depth=50
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-timefrugal-qa
+
+      - name: Install Timefrugal-QA agent
+        run: |
+          pip install --upgrade pip
+          pip install git+https://github.com/timefrugal/Timefrugal-QA.git@main
+
+      - name: Install analysis tools
+        run: pip install bandit semgrep pylint mypy radon pip-audit
+
+      - name: Install project dependencies
+        run: |
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          if [ -f requirements-dev.txt ]; then pip install -r requirements-dev.txt; fi
+          if [ -f pyproject.toml ]; then pip install -e ".[dev]" 2>/dev/null || pip install -e . 2>/dev/null || true; fi
+        continue-on-error: true
+
+      - name: Run Timefrugal-QA
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_SHA: ${{ github.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          python -m qa_agent \
+            --ci \
+            --base origin/${{ github.base_ref }} \
+            --pr ${{ github.event.pull_request.number }}
+
+      - name: Upload QA report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qa-report
+          path: qa_report.md
+          if-no-files-found: ignore
+          retention-days: 30
