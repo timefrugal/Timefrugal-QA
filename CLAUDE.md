@@ -18,7 +18,10 @@ Timefrugal-QA/
 │   ├── __main__.py          # CLI: python -m qa_agent [--ci|--base|--no-tests|--commit-tests|--model]
 │   ├── config.py            # all config via env vars (GITHUB_TOKEN, QA_AI_MODEL, etc.)
 │   ├── agent.py             # orchestrator: git diff → static analysis → AI review → report
-│   ├── static_analysis.py  # runs bandit, semgrep, pylint, mypy, radon, pip-audit
+│   ├── static_analysis.py  # runs bandit, semgrep, pylint, mypy, radon, pip-audit (parallel)
+│   ├── semgrep_rules/
+│   │   ├── python-security.yml  # subprocess shell=True, eval/exec, pickle, hardcoded secrets, requests timeout
+│   │   └── python-quality.yml   # bare except, mutable default args
 │   ├── ai_review.py         # GitHub Models API (OpenAI-compatible, GITHUB_TOKEN auth)
 │   ├── pr_reporter.py       # posts PR comment + sets commit status check via GitHub API
 │   └── local_reporter.py   # rich terminal output + saves qa_report.md
@@ -44,6 +47,7 @@ Timefrugal-QA/
 - **PR comment deduplication:** `pr_reporter.py` looks for an existing comment with the marker `<!-- timefrugal-qa-comment -->` and updates it rather than appending a new one on each push.
 - **Token budget:** AI responses capped at 3000 tokens (`QA_AI_MAX_TOKENS`) and file content truncated at 6000 chars per file to stay within free rate limits.
 - **Local-first workflow:** The intended usage pattern is run `run_local_qa.sh` → fix issues → raise PR. This minimises GitHub Actions minutes consumed.
+- **Custom semgrep rules:** `qa_agent/semgrep_rules/` is bundled in the package and loaded automatically alongside `--config auto`. Add new `.yml` files to that directory to extend coverage without changing any Python code.
 
 ---
 
@@ -84,13 +88,12 @@ bash scripts/setup_all_repos.sh
 
 - **Go/JS support:** Currently Python-only. `static_analysis.py` can be extended with language detection + `gosec`/`eslint` runners.
 - **GitHub org-level required workflows:** If the account is upgraded to an org, replace `setup_all_repos.sh` with a GitHub org-level required workflow setting (Settings → Actions → Required workflows). Cheaper to maintain.
-- **Semgrep rules:** Currently uses `--config auto` (community rules). Can point to a custom ruleset in this repo at `semgrep-rules/` for organisation-specific patterns.
-
 ### Completed improvements
 - ~~pyproject.toml support~~ — migrated from `setup.py` (2026-06-12)
 - ~~Parallel tool execution~~ — `static_analysis.py` now uses `ThreadPoolExecutor` (2026-06-12)
 - ~~Rate limit handling~~ — exponential backoff on HTTP 429 in `ai_review.py` (2026-06-11)
 - ~~Test file auto-commit~~ — `--commit-tests` flag added (2026-06-12)
+- ~~Semgrep custom rules~~ — `qa_agent/semgrep_rules/` bundled in package, run alongside `--config auto` (2026-06-12)
 
 ---
 
