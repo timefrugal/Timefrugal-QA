@@ -14,7 +14,7 @@ AI-powered QA agent for Python repos. Runs as a GitHub Actions reusable workflow
 ```
 Timefrugal-QA/
 ├── qa_agent/
-│   ├── __init__.py          # version = 1.0.0
+│   ├── __init__.py          # version = 1.1.0
 │   ├── __main__.py          # CLI: python -m qa_agent [--ci|--base|--no-tests|--commit-tests|--model]
 │   ├── config.py            # all config via env vars (GITHUB_TOKEN, QA_AI_MODEL, etc.)
 │   ├── agent.py             # orchestrator: git diff → static analysis → AI review → report
@@ -32,6 +32,7 @@ Timefrugal-QA/
 ├── scripts/
 │   ├── run_local_qa.sh      # local pre-PR runner (uses GITHUB_TOKEN or gh CLI)
 │   └── setup_all_repos.sh  # bulk-adds workflow to all repos via gh CLI + GitHub API
+├── .pre-commit-hooks.yaml   # pre-commit framework integration
 ├── pyproject.toml           # pip-installable: pip install git+https://github.com/Timefrugal/Timefrugal-QA.git@main
 ├── requirements.txt         # openai, bandit, semgrep, pylint, mypy, radon, pip-audit, rich, requests
 └── README.md
@@ -48,39 +49,9 @@ Timefrugal-QA/
 - **Token budget:** AI responses capped at 3000 tokens (`QA_AI_MAX_TOKENS`) and file content truncated at 6000 chars per file to stay within free rate limits.
 - **Local-first workflow:** The intended usage pattern is run `run_local_qa.sh` → fix issues → raise PR. This minimises GitHub Actions minutes consumed.
 - **Custom semgrep rules:** `qa_agent/semgrep_rules/` is bundled in the package and loaded automatically alongside `--config auto`. Add new `.yml` files to that directory to extend coverage without changing any Python code.
-
----
-
-## Immediate next steps (priority order)
-
-### 1. Publish to GitHub (REQUIRED before anything else works)
-```bash
-cd /path/to/Timefrugal-QA
-git init
-git add .
-git commit -m "feat: initial Timefrugal-QA agent"
-gh repo create Timefrugal/Timefrugal-QA --public --source=. --push
-```
-
-### 2. Smoke-test locally
-```bash
-export GITHUB_TOKEN=$(gh auth token)
-pip install -e .
-pip install bandit semgrep pylint mypy radon pip-audit
-# Run against a test repo that has some Python changes staged
-cd /path/to/some-python-repo
-python -m qa_agent --base main
-```
-
-### 3. Apply to all repos
-```bash
-export GITHUB_TOKEN=$(gh auth token)
-bash scripts/setup_all_repos.sh
-```
-
-### 4. Test CI workflow end-to-end
-- Raise a test PR in any Python repo that now has `qa.yml`
-- Verify the PR comment appears and commit status is set
+- **Parallel AI calls:** `review_code` and `generate_tests` run concurrently via `ThreadPoolExecutor` in `agent.py` — cuts AI wait time ~50% when test generation is enabled.
+- **GitHub Actions step summary:** `pr_reporter.write_step_summary()` appends the report to `$GITHUB_STEP_SUMMARY` after every CI run. No-op locally (env var not set).
+- **API retry consistency:** All GitHub API calls in `pr_reporter.py` use `_request_with_retry()` — same 5s/10s/20s exponential backoff on HTTP 429 as `ai_review.py`.
 
 ---
 
@@ -94,6 +65,11 @@ bash scripts/setup_all_repos.sh
 - ~~Rate limit handling~~ — exponential backoff on HTTP 429 in `ai_review.py` (2026-06-11)
 - ~~Test file auto-commit~~ — `--commit-tests` flag added (2026-06-12)
 - ~~Semgrep custom rules~~ — `qa_agent/semgrep_rules/` bundled in package, run alongside `--config auto` (2026-06-12)
+- ~~GitHub Actions step summary~~ — report written to `$GITHUB_STEP_SUMMARY` in CI (2026-06-12)
+- ~~Parallel AI calls~~ — `review_code` + `generate_tests` run concurrently (2026-06-12)
+- ~~GitHub API retry~~ — `pr_reporter.py` retries on HTTP 429, consistent with `ai_review.py` (2026-06-12)
+- ~~Pre-commit hook~~ — `.pre-commit-hooks.yaml` added for pre-commit framework integration (2026-06-12)
+- ~~Version bump~~ — 1.0.0 → 1.1.0 (2026-06-12)
 
 ---
 

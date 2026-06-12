@@ -13,7 +13,7 @@ On every pull request (and optionally before raising one locally), the agent:
 1. **Static analysis** — runs bandit, semgrep, pylint, mypy, radon, and pip-audit on changed Python files
 2. **AI code review** — sends the diff + static findings to GitHub Models (`gpt-4o-mini`) acting as a senior engineer with 15+ years of experience; reviews for bugs, security vulnerabilities, architecture/design issues, and performance
 3. **Test generation** — generates comprehensive pytest test cases for changed code
-4. **Reports** — posts a structured review comment on the PR and sets a commit status check (blocks merge if critical/high issues are found)
+4. **Reports** — posts a structured review comment on the PR, sets a commit status check (blocks merge if critical/high issues are found), and writes a formatted summary to the GitHub Actions step summary UI
 
 ---
 
@@ -22,8 +22,10 @@ On every pull request (and optionally before raising one locally), the agent:
 ```
 Timefrugal/Timefrugal-QA         ← this repo (central)
 ├── qa_agent/                     ← Python agent package
+│   └── semgrep_rules/            ← bundled custom semgrep rules
 ├── .github/workflows/
 │   └── qa-reusable.yml           ← reusable workflow (called by other repos)
+├── .pre-commit-hooks.yaml        ← pre-commit framework integration
 ├── templates/
 │   └── repo_workflow.yml         ← template to copy into each repo
 └── scripts/
@@ -97,6 +99,27 @@ When passed, the agent writes the AI-generated pytest file to `tests/` and creat
 - Multiple files changed → `tests/test_changes.py`
 
 If the commit fails (e.g. a pre-commit hook rejects it) the error is printed and the rest of the QA report continues normally.
+
+### Pre-commit hook integration
+
+To run Timefrugal-QA automatically before every commit via the [pre-commit](https://pre-commit.com) framework, add this to your repo's `.pre-commit-config.yaml`:
+
+```yaml
+repos:
+  - repo: https://github.com/timefrugal/Timefrugal-QA
+    rev: main
+    hooks:
+      - id: timefrugal-qa
+```
+
+Then install the hook:
+
+```bash
+pip install pre-commit
+pre-commit install
+```
+
+`GITHUB_TOKEN` must be set in your environment for the AI review to run.
 
 ---
 
