@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "timefrugal-qa"
+version = "1.0.0"
+description = "AI-powered QA agent for Python repos — free via GitHub Models"
+requires-python = ">=3.10"
+dependencies = [
+    "openai>=1.30.0",
+    "requests>=2.31.0",
+    "rich>=13.7.0",
+]
+
+[project.scripts]
+timefrugal-qa = "qa_agent.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
