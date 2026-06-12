@@ -5,6 +5,7 @@ Returns structured findings; never raises on tool failure (graceful degradation)
 import json
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
@@ -347,21 +348,24 @@ def run_all(files: List[str], project_root: str = ".") -> AnalysisResults:
     # Filter to only existing Python files
     py_files = [f for f in files if f.endswith(".py") and Path(f).exists()]
 
-    runners = [
-        ("bandit",   lambda: run_bandit(py_files)),
-        ("semgrep",  lambda: run_semgrep(py_files)),
-        ("pylint",   lambda: run_pylint(py_files)),
-        ("mypy",     lambda: run_mypy(py_files)),
-        ("radon",    lambda: run_radon(py_files)),
-        ("pip-audit",lambda: run_pip_audit(project_root)),
-    ]
+    runners = {
+        "bandit":    lambda: run_bandit(py_files),
+        "semgrep":   lambda: run_semgrep(py_files),
+        "pylint":    lambda: run_pylint(py_files),
+        "mypy":      lambda: run_mypy(py_files),
+        "radon":     lambda: run_radon(py_files),
+        "pip-audit": lambda: run_pip_audit(project_root),
+    }
 
-    for name, runner in runners:
-        try:
-            result = runner()
-            combined.findings.extend(result.findings)
-            combined.errors.extend(result.errors)
-        except Exception as exc:
-            combined.errors.append(f"{name}: unexpected error — {exc}")
+    with ThreadPoolExecutor(max_workers=len(runners)) as pool:
+        futures = {pool.submit(fn): name for name, fn in runners.items()}
+        for future in as_completed(futures):
+            name = futures[future]
+            try:
+                result = future.result()
+                combined.findings.extend(result.findings)
+                combined.errors.extend(result.errors)
+            except Exception as exc:
+                combined.errors.append(f"{name}: unexpected error — {exc}")
 
     return combined
