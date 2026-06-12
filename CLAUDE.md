@@ -5,7 +5,7 @@ AI-powered QA agent for Python repos. Runs as a GitHub Actions reusable workflow
 
 **Owner:** github.com/Timefrugal  
 **Target language:** Python  
-**Status:** Code complete, not yet published to GitHub
+**Status:** Live and end-to-end tested (published 2026-06-11)
 
 ---
 
@@ -15,7 +15,7 @@ AI-powered QA agent for Python repos. Runs as a GitHub Actions reusable workflow
 Timefrugal-QA/
 ├── qa_agent/
 │   ├── __init__.py          # version = 1.0.0
-│   ├── __main__.py          # CLI: python -m qa_agent [--ci|--local|--base|--no-tests]
+│   ├── __main__.py          # CLI: python -m qa_agent [--ci|--base|--no-tests|--commit-tests|--model]
 │   ├── config.py            # all config via env vars (GITHUB_TOKEN, QA_AI_MODEL, etc.)
 │   ├── agent.py             # orchestrator: git diff → static analysis → AI review → report
 │   ├── static_analysis.py  # runs bandit, semgrep, pylint, mypy, radon, pip-audit
@@ -29,7 +29,7 @@ Timefrugal-QA/
 ├── scripts/
 │   ├── run_local_qa.sh      # local pre-PR runner (uses GITHUB_TOKEN or gh CLI)
 │   └── setup_all_repos.sh  # bulk-adds workflow to all repos via gh CLI + GitHub API
-├── setup.py                 # pip-installable: pip install git+https://github.com/Timefrugal/Timefrugal-QA.git@main
+├── pyproject.toml           # pip-installable: pip install git+https://github.com/Timefrugal/Timefrugal-QA.git@main
 ├── requirements.txt         # openai, bandit, semgrep, pylint, mypy, radon, pip-audit, rich, requests
 └── README.md
 ```
@@ -82,13 +82,15 @@ bash scripts/setup_all_repos.sh
 
 ## Known gaps / future improvements
 
-- **pyproject.toml support:** `setup.py` is legacy. Migrate to `pyproject.toml` when convenient.
 - **Go/JS support:** Currently Python-only. `static_analysis.py` can be extended with language detection + `gosec`/`eslint` runners.
-- **Parallel tool execution:** Static tools in `static_analysis.py` run sequentially. Use `concurrent.futures.ThreadPoolExecutor` to speed up.
-- **Test file auto-commit:** Agent currently only shows generated tests in the PR comment. Option to auto-commit them to a `tests/` directory could be added behind a flag.
 - **GitHub org-level required workflows:** If the account is upgraded to an org, replace `setup_all_repos.sh` with a GitHub org-level required workflow setting (Settings → Actions → Required workflows). Cheaper to maintain.
-- **Rate limit handling:** `ai_review.py` does not currently retry on GitHub Models rate limit errors (HTTP 429). Add exponential backoff around the `client.chat.completions.create` call.
 - **Semgrep rules:** Currently uses `--config auto` (community rules). Can point to a custom ruleset in this repo at `semgrep-rules/` for organisation-specific patterns.
+
+### Completed improvements
+- ~~pyproject.toml support~~ — migrated from `setup.py` (2026-06-12)
+- ~~Parallel tool execution~~ — `static_analysis.py` now uses `ThreadPoolExecutor` (2026-06-12)
+- ~~Rate limit handling~~ — exponential backoff on HTTP 429 in `ai_review.py` (2026-06-11)
+- ~~Test file auto-commit~~ — `--commit-tests` flag added (2026-06-12)
 
 ---
 
@@ -99,6 +101,8 @@ bash scripts/setup_all_repos.sh
 | `GITHUB_TOKEN` | Auto in Actions; manual locally | Auth for GitHub Models AI + GitHub API |
 | `QA_AI_MODEL` | Optional | Override model (default: `gpt-4o-mini`) |
 | `QA_AI_MAX_TOKENS` | Optional | Max AI response tokens (default: 3000) |
+| `QA_AI_RETRY_MAX_ATTEMPTS` | Optional | Retries on rate-limit HTTP 429 (default: 3) |
+| `QA_AI_RETRY_BASE_DELAY` | Optional | Base retry delay in seconds, doubles each attempt (default: 5.0) |
 | `QA_MAX_COMPLEXITY` | Optional | Cyclomatic complexity threshold (default: 10) |
 | `QA_REPORT_FILE` | Optional | Local report output path (default: `qa_report.md`) |
 | `GITHUB_REPOSITORY` | Auto in Actions | `owner/repo` string |
@@ -119,9 +123,24 @@ python -m qa_agent
 # Diff vs a different branch, skip test generation
 python -m qa_agent --base develop --no-tests
 
+# Write generated tests to tests/ and commit them
+python -m qa_agent --commit-tests
+
 # Use a more powerful model
 python -m qa_agent --model gpt-4o
 ```
+
+### All CLI flags
+
+| Flag | Description |
+|------|-------------|
+| `--base <ref>` | Diff against a different branch or commit (default: `origin/main`) |
+| `--no-tests` | Skip AI test case generation |
+| `--commit-tests` | Write generated tests to `tests/` and commit (local mode only) |
+| `--model <id>` | Override the GitHub Models AI model |
+| `--ci` | CI mode — posts PR comment + sets commit status |
+| `--pr <number>` | PR number (CI mode; set automatically in Actions) |
+| `--root <path>` | Project root directory (default: `.`) |
 
 ---
 
