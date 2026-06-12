@@ -72,6 +72,34 @@ If it exits with code 0, raise the PR. If not, fix the issues first.
 
 ---
 
+## CLI reference
+
+```bash
+python -m qa_agent [options]
+```
+
+| Flag | Description |
+|------|-------------|
+| _(none)_ | Diff vs `origin/main`, full review, tests shown in terminal |
+| `--base <ref>` | Diff against a different branch or commit (e.g. `--base develop`) |
+| `--no-tests` | Skip AI test case generation |
+| `--commit-tests` | Write generated tests to `tests/` and commit them (local mode only) |
+| `--model <id>` | Override the GitHub Models AI model (e.g. `--model gpt-4o`) |
+| `--ci` | CI mode — posts PR comment and sets commit status instead of terminal output |
+| `--pr <number>` | PR number, used with `--ci` (set automatically in GitHub Actions) |
+| `--root <path>` | Project root directory (default: current directory) |
+
+### `--commit-tests` behaviour
+
+When passed, the agent writes the AI-generated pytest file to `tests/` and creates a git commit:
+
+- Single file changed → `tests/test_<filename>.py`
+- Multiple files changed → `tests/test_changes.py`
+
+If the commit fails (e.g. a pre-commit hook rejects it) the error is printed and the rest of the QA report continues normally.
+
+---
+
 ## GitHub token scopes
 
 | Context | Required scopes |
@@ -90,6 +118,8 @@ All config is via environment variables:
 |----------|---------|-------------|
 | `QA_AI_MODEL` | `gpt-4o-mini` | GitHub Models AI model |
 | `QA_AI_MAX_TOKENS` | `3000` | Max tokens per AI response |
+| `QA_AI_RETRY_MAX_ATTEMPTS` | `3` | Retries on GitHub Models rate-limit (HTTP 429) |
+| `QA_AI_RETRY_BASE_DELAY` | `5.0` | Base delay in seconds between retries (doubles each attempt) |
 | `QA_MAX_COMPLEXITY` | `10` | Cyclomatic complexity threshold |
 | `QA_REPORT_FILE` | `qa_report.md` | Local report output path |
 
