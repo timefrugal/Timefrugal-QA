@@ -15,6 +15,10 @@ AI_MODEL = os.getenv("QA_AI_MODEL", "gpt-4o-mini")
 # Max tokens for AI responses (keep low to stay within free rate limits)
 AI_MAX_TOKENS = int(os.getenv("QA_AI_MAX_TOKENS", "3000"))
 
+# Retry settings for GitHub Models rate-limit errors (HTTP 429)
+AI_RETRY_MAX_ATTEMPTS = int(os.getenv("QA_AI_RETRY_MAX_ATTEMPTS", "3"))
+AI_RETRY_BASE_DELAY = float(os.getenv("QA_AI_RETRY_BASE_DELAY", "5.0"))  # seconds; doubles each attempt
+
 # ──────────────────────────────────────────────
 # GitHub API
 # ──────────────────────────────────────────────

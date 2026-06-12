@@ -5,9 +5,11 @@ with the user's GITHUB_TOKEN — no extra billing.
 """
 import json
 import os
+import time
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import Callable, List, Optional, TypeVar
 
+import openai
 from openai import OpenAI
 
 from qa_agent import config
@@ -87,6 +89,26 @@ Start with the import block.
 
 
 # ──────────────────────────────────────────────
+# Retry helper
+# ──────────────────────────────────────────────
+
+_T = TypeVar("_T")
+
+
+def _call_with_retry(fn: Callable[[], _T]) -> _T:
+    """Call fn(), retrying on HTTP 429 (rate limit) with exponential backoff."""
+    for attempt in range(config.AI_RETRY_MAX_ATTEMPTS):
+        try:
+            return fn()
+        except openai.RateLimitError:
+            if attempt == config.AI_RETRY_MAX_ATTEMPTS - 1:
+                raise
+            delay = config.AI_RETRY_BASE_DELAY * (2 ** attempt)
+            time.sleep(delay)
+    raise RuntimeError("unreachable")  # satisfies type checker
+
+
+# ──────────────────────────────────────────────
 # Client factory
 # ──────────────────────────────────────────────
 
@@ -149,7 +171,7 @@ Please perform a thorough code review of the changed files above.
 """
 
     try:
-        response = client.chat.completions.create(
+        response = _call_with_retry(lambda: client.chat.completions.create(
             model=config.AI_MODEL,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
@@ -157,7 +179,7 @@ Please perform a thorough code review of the changed files above.
             ],
             max_tokens=config.AI_MAX_TOKENS,
             temperature=0.1,
-        )
+        ))
         raw = response.choices[0].message.content or "{}"
         # Strip markdown fences if model wraps JSON
         raw = raw.strip()
@@ -227,7 +249,7 @@ def generate_tests(
     user_msg += "\nGenerate new comprehensive pytest test cases for the source code above."
 
     try:
-        response = client.chat.completions.create(
+        response = _call_with_retry(lambda: client.chat.completions.create(
             model=config.AI_MODEL,
             messages=[
                 {"role": "system", "content": TEST_SYSTEM_PROMPT},
@@ -235,7 +257,7 @@ def generate_tests(
             ],
             max_tokens=config.AI_MAX_TOKENS,
             temperature=0.1,
-        )
+        ))
         test_code = response.choices[0].message.content or ""
         # Strip markdown fences if present
         test_code = test_code.strip()
