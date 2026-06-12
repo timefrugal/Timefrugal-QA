@@ -71,12 +71,44 @@ def find_existing_tests(changed_files: List[str]) -> dict[str, str]:
 # Main run function
 # ──────────────────────────────────────────────
 
+def _tests_output_path(changed_files: List[str]) -> Path:
+    tests_dir = Path("tests")
+    if len(changed_files) == 1:
+        stem = Path(changed_files[0]).stem
+        return tests_dir / f"test_{stem}.py"
+    return tests_dir / "test_changes.py"
+
+
+def write_and_commit_tests(generated_tests: str, changed_files: List[str]) -> None:
+    """Write generated tests to tests/ and create a git commit."""
+    if not generated_tests or not generated_tests.strip():
+        print("[agent] No generated tests to commit.")
+        return
+
+    out_path = _tests_output_path(changed_files)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(generated_tests.strip() + "\n", encoding="utf-8")
+    print(f"[agent] Written generated tests to: {out_path}")
+
+    files_str = ", ".join(Path(f).name for f in changed_files)
+    try:
+        subprocess.run(["git", "add", str(out_path)], check=True, capture_output=True)
+        subprocess.run(
+            ["git", "commit", "-m", f"test: add AI-generated tests for {files_str}"],
+            check=True, capture_output=True,
+        )
+        print(f"[agent] Committed {out_path}")
+    except subprocess.CalledProcessError as e:
+        print(f"[agent] git commit failed: {e.stderr.strip()}", file=sys.stderr)
+
+
 def run(
     mode: str = "local",
     base_ref: str = "origin/main",
     pr_number: Optional[str] = None,
     project_root: str = ".",
     generate_test_cases: bool = True,
+    commit_tests: bool = False,
 ) -> int:
     """
     Run the full QA pipeline.
@@ -133,6 +165,8 @@ def run(
     if generate_test_cases and file_contents:
         print("[agent] Generating AI test cases...")
         generated_tests = generate_tests(file_contents, existing_tests)
+        if commit_tests and mode == "local":
+            write_and_commit_tests(generated_tests, changed)
 
     # ── 6. Determine overall verdict ──────────────────────────────────
     blocked = static_results.has_blocking_issues or ai_review.has_blocking_issues

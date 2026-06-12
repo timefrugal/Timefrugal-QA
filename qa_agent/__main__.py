@@ -51,6 +51,11 @@ def main():
         help="Skip AI test case generation",
     )
     parser.add_argument(
+        "--commit-tests",
+        action="store_true",
+        help="Write generated tests to tests/ and commit them (local mode only)",
+    )
+    parser.add_argument(
         "--model",
         default=None,
         help="Override GitHub Models AI model (default: gpt-4o-mini)",
@@ -79,6 +84,7 @@ def main():
         pr_number=pr_number,
         project_root=args.root,
         generate_test_cases=not args.no_tests,
+        commit_tests=args.commit_tests,
     )
     sys.exit(exit_code)
 
