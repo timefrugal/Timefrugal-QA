@@ -139,11 +139,39 @@ with:
 |------|---------|
 | [GitHub Models](https://github.com/marketplace/models) | Free AI (`gpt-4o-mini`) — code review and test generation |
 | [bandit](https://bandit.readthedocs.io) | Python security linter |
-| [semgrep](https://semgrep.dev) | SAST — free community rules |
+| [semgrep](https://semgrep.dev) | SAST — free community rules + bundled custom rules |
 | [pylint](https://pylint.org) | Code quality and bug detection |
 | [mypy](https://mypy-lang.org) | Static type checking |
 | [radon](https://radon.readthedocs.io) | Cyclomatic complexity |
 | [pip-audit](https://pypi.org/project/pip-audit/) | Dependency vulnerability scanning |
+
+---
+
+## Custom semgrep rules
+
+Bundled rules in `qa_agent/semgrep_rules/` run automatically alongside the free community ruleset. No configuration needed.
+
+### python-security.yml
+
+| Rule | Severity | What it catches |
+|------|----------|-----------------|
+| `subprocess-shell-true` | HIGH | `subprocess` called with `shell=True` |
+| `eval-use` | CRITICAL | Any use of `eval()` |
+| `exec-use` | CRITICAL | Any use of `exec()` |
+| `pickle-deserialize` | CRITICAL | `pickle.loads()` / `pickle.load()` |
+| `requests-no-timeout` | HIGH | `requests` calls missing a `timeout` argument |
+| `hardcoded-secret` | CRITICAL | String assigned to a variable named `password`, `api_key`, `token`, etc. |
+
+### python-quality.yml
+
+| Rule | Severity | What it catches |
+|------|----------|-----------------|
+| `bare-except` | HIGH | `except:` with no exception type specified |
+| `mutable-default-arg` | HIGH | `def f(x=[], ...)` or `def f(x={}, ...)` |
+
+### Adding your own rules
+
+Drop any `.yml` file into `qa_agent/semgrep_rules/` following the [semgrep rule syntax](https://semgrep.dev/docs/writing-rules/rule-syntax). It will be picked up automatically on the next run — no code changes needed.
 
 ---
 
