@@ -12,6 +12,8 @@ from typing import List, Optional
 
 from qa_agent import config
 
+_SEMGREP_RULES_DIR = Path(__file__).parent / "semgrep_rules"
+
 
 @dataclass
 class Finding:
@@ -153,7 +155,10 @@ def run_semgrep(files: List[str]) -> AnalysisResults:
         "--config", "auto",      # free community rules
         "--json",
         "--quiet",
-    ] + files
+    ]
+    if _SEMGREP_RULES_DIR.is_dir():
+        cmd += ["--config", str(_SEMGREP_RULES_DIR)]
+    cmd += files
     rc, stdout, stderr = _run(cmd)
 
     if rc == -1:
@@ -167,15 +172,16 @@ def run_semgrep(files: List[str]) -> AnalysisResults:
         return results
 
     for item in data.get("results", []):
+        extra = item.get("extra", {})
         results.findings.append(Finding(
             tool="semgrep",
-            severity=_semgrep_severity(item.get("extra", {}).get("severity", "INFO")),
-            category="security",
+            severity=_semgrep_severity(extra.get("severity", "INFO")),
+            category=extra.get("metadata", {}).get("category", "security"),
             file=item.get("path", ""),
             line=item.get("start", {}).get("line", 0),
-            message=item.get("extra", {}).get("message", ""),
+            message=extra.get("message", ""),
             rule_id=item.get("check_id", ""),
-            context=item.get("extra", {}).get("lines", ""),
+            context=extra.get("lines", ""),
         ))
 
     return results

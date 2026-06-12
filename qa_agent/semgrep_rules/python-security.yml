@@ -1,0 +1,68 @@
+rules:
+  - id: subprocess-shell-true
+    patterns:
+      - pattern: subprocess.$FUNC(..., shell=True, ...)
+    message: >
+      subprocess called with shell=True — vulnerable to shell injection if any argument contains
+      user-controlled input. Pass a list of arguments and remove shell=True.
+    severity: WARNING
+    languages: [python]
+    metadata:
+      category: security
+
+  - id: eval-use
+    pattern: eval(...)
+    message: >
+      eval() executes arbitrary Python. Avoid entirely or strictly validate and sandbox input.
+    severity: ERROR
+    languages: [python]
+    metadata:
+      category: security
+
+  - id: exec-use
+    pattern: exec(...)
+    message: >
+      exec() executes arbitrary Python. Avoid entirely or strictly validate and sandbox input.
+    severity: ERROR
+    languages: [python]
+    metadata:
+      category: security
+
+  - id: pickle-deserialize
+    pattern-either:
+      - pattern: pickle.loads(...)
+      - pattern: pickle.load(...)
+    message: >
+      pickle deserialisation executes arbitrary code. Never unpickle data from untrusted sources.
+      Use JSON or a safe serialisation format instead.
+    severity: ERROR
+    languages: [python]
+    metadata:
+      category: security
+
+  - id: requests-no-timeout
+    patterns:
+      - pattern: requests.$METHOD(...)
+      - pattern-not: requests.$METHOD(..., timeout=..., ...)
+    message: >
+      requests.$METHOD called without a timeout — will hang indefinitely on slow or unresponsive
+      servers. Add timeout=<seconds>.
+    severity: WARNING
+    languages: [python]
+    metadata:
+      category: reliability
+
+  - id: hardcoded-secret
+    patterns:
+      - pattern: $VAR = "$VALUE"
+      - metavariable-regex:
+          metavariable: $VAR
+          regex: (?i)(password|passwd|secret|api_key|apikey|token|auth_token|access_token|private_key|credential)
+      - pattern-not: $VAR = ""
+    message: >
+      Possible hardcoded secret in '$VAR'. Use environment variables or a secrets manager
+      (e.g. os.getenv("SECRET_NAME")) instead.
+    severity: ERROR
+    languages: [python]
+    metadata:
+      category: security
