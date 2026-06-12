@@ -1,0 +1,9 @@
+- id: timefrugal-qa
+  name: Timefrugal-QA
+  description: >
+    AI-powered code review — runs bandit, semgrep, pylint, mypy, radon,
+    pip-audit, and GitHub Models AI review on changed Python files.
+  entry: python -m qa_agent
+  language: python
+  types: [python]
+  pass_filenames: false

@@ -3,7 +3,8 @@ Posts structured review results as GitHub PR comments and sets commit status che
 """
 import json
 import os
-from typing import Optional
+import time
+from typing import Callable, Optional
 
 import requests
 
@@ -21,6 +22,16 @@ SEVERITY_EMOJI = {
 }
 
 CHECK_NAME = "Timefrugal-QA"
+
+
+def _request_with_retry(method: Callable, url: str, **kwargs) -> requests.Response:
+    """Make an HTTP request, retrying up to 3 times on HTTP 429 with exponential backoff."""
+    for attempt in range(3):
+        resp = method(url, **kwargs)
+        if resp.status_code != 429 or attempt == 2:
+            return resp
+        time.sleep(5.0 * (2 ** attempt))
+    return resp  # satisfies type checker
 
 
 def _headers() -> dict:
@@ -60,10 +71,10 @@ def post_pr_comment(
     existing_id = _find_existing_comment(repo, pr_number)
     if existing_id:
         url = _api(f"/repos/{repo}/issues/comments/{existing_id}")
-        resp = requests.patch(url, headers=_headers(), json={"body": body}, timeout=30)
+        resp = _request_with_retry(requests.patch, url, headers=_headers(), json={"body": body}, timeout=30)
     else:
         url = _api(f"/repos/{repo}/issues/{pr_number}/comments")
-        resp = requests.post(url, headers=_headers(), json={"body": body}, timeout=30)
+        resp = _request_with_retry(requests.post, url, headers=_headers(), json={"body": body}, timeout=30)
 
     if resp.status_code not in (200, 201):
         print(f"[pr_reporter] Failed to post comment: {resp.status_code} {resp.text[:200]}")
@@ -96,8 +107,30 @@ def set_commit_status(blocked: bool, description: str = "") -> bool:
         "context": CHECK_NAME,
         "target_url": f"https://github.com/{repo}/pull/{config.PR_NUMBER}",
     }
-    resp = requests.post(url, headers=_headers(), json=payload, timeout=30)
+    resp = _request_with_retry(requests.post, url, headers=_headers(), json=payload, timeout=30)
     return resp.status_code == 201
+
+
+# ──────────────────────────────────────────────
+# GitHub Actions step summary
+# ──────────────────────────────────────────────
+
+def write_step_summary(
+    static_results: AnalysisResults,
+    ai_review: AIReview,
+    generated_tests: str = "",
+) -> None:
+    """Append the QA report to $GITHUB_STEP_SUMMARY if running in GitHub Actions."""
+    summary_file = os.getenv("GITHUB_STEP_SUMMARY")
+    if not summary_file:
+        return
+    body = _build_comment(static_results, ai_review, generated_tests)
+    body = body.replace("<!-- timefrugal-qa-comment -->\n", "")
+    try:
+        with open(summary_file, "a", encoding="utf-8") as f:
+            f.write(body + "\n")
+    except Exception as e:
+        print(f"[pr_reporter] Could not write step summary: {e}")
 
 
 # ──────────────────────────────────────────────
@@ -242,7 +275,7 @@ def _find_existing_comment(repo: str, pr_number: str) -> Optional[int]:
     url = _api(f"/repos/{repo}/issues/{pr_number}/comments")
     params = {"per_page": 100}
     try:
-        resp = requests.get(url, headers=_headers(), params=params, timeout=30)
+        resp = _request_with_retry(requests.get, url, headers=_headers(), params=params, timeout=30)
         if resp.status_code != 200:
             return None
         for comment in resp.json():

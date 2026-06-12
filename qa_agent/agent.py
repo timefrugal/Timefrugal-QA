@@ -5,6 +5,7 @@ Determines changed files, runs all analysis, generates tests, then reports.
 import os
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import List, Optional
 
@@ -149,24 +150,29 @@ def run(
         f"CRITICAL:{s['CRITICAL']} HIGH:{s['HIGH']} MEDIUM:{s['MEDIUM']} LOW:{s['LOW']}"
     )
 
-    # ── 4. AI code review ─────────────────────────────────────────────
-    print(f"[agent] Sending to GitHub Models AI ({config.AI_MODEL}) for code review...")
-    ai_review = review_code(
-        file_contents=file_contents,
-        static_results=static_results,
-        repo_name=config.GITHUB_REPOSITORY,
-    )
+    # ── 4+5. AI code review + test generation (parallel) ──────────────
+    print(f"[agent] Sending to GitHub Models AI ({config.AI_MODEL}) for code review"
+          + (" + test generation..." if generate_test_cases and file_contents else "..."))
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        review_future = pool.submit(
+            review_code,
+            file_contents=file_contents,
+            static_results=static_results,
+            repo_name=config.GITHUB_REPOSITORY,
+        )
+        tests_future = (
+            pool.submit(generate_tests, file_contents, existing_tests)
+            if generate_test_cases and file_contents else None
+        )
+        ai_review = review_future.result()
+        generated_tests = tests_future.result() if tests_future is not None else ""
+
     if ai_review.errors:
         for err in ai_review.errors:
             print(f"[agent] AI review warning: {err}", file=sys.stderr)
 
-    # ── 5. Generate test cases ─────────────────────────────────────────
-    generated_tests = ""
-    if generate_test_cases and file_contents:
-        print("[agent] Generating AI test cases...")
-        generated_tests = generate_tests(file_contents, existing_tests)
-        if commit_tests and mode == "local":
-            write_and_commit_tests(generated_tests, changed)
+    if commit_tests and mode == "local" and generated_tests:
+        write_and_commit_tests(generated_tests, changed)
 
     # ── 6. Determine overall verdict ──────────────────────────────────
     blocked = static_results.has_blocking_issues or ai_review.has_blocking_issues
@@ -192,13 +198,14 @@ def run(
 
 
 def _report_ci(pr_number, static_results, ai_review, generated_tests, blocked):
-    """Report to GitHub PR comment and commit status."""
-    from qa_agent.pr_reporter import post_pr_comment, set_commit_status
+    """Report to GitHub PR comment, commit status, and Actions step summary."""
+    from qa_agent.pr_reporter import post_pr_comment, set_commit_status, write_step_summary
     if pr_number:
         print("[agent] Posting PR comment...")
         post_pr_comment(pr_number, static_results, ai_review, generated_tests)
     print("[agent] Setting commit status check...")
     set_commit_status(blocked=blocked)
+    write_step_summary(static_results, ai_review, generated_tests)
 
 
 def _report_local(static_results, ai_review, generated_tests, changed_files):
