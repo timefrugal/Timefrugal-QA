@@ -70,31 +70,36 @@ for REPO in $REPOS; do
   # Read and base64-encode the workflow file (portable: macOS/Linux)
   CONTENT=$(openssl base64 -in "$WORKFLOW_SOURCE" | tr -d '\n')
 
-  # Try to create the file via GitHub API
-  if gh api \
-    --method PUT \
-    "repos/$FULL_REPO/contents/$WORKFLOW_DEST" \
-    --field message="$COMMIT_MSG" \
-    --field content="$CONTENT" \
-    --field branch="main" \
-    &>/dev/null 2>&1; then
-    echo "✅ $REPO — workflow added"
-    ((ADDED++)) || true
-  else
-    # Try 'master' branch as fallback
-    if gh api \
+  _try_add() {
+    local branch="$1"
+    local err
+    err=$(gh api \
       --method PUT \
       "repos/$FULL_REPO/contents/$WORKFLOW_DEST" \
       --field message="$COMMIT_MSG" \
       --field content="$CONTENT" \
-      --field branch="master" \
-      &>/dev/null 2>&1; then
-      echo "✅ $REPO — workflow added (master branch)"
+      --field branch="$branch" \
+      2>&1)
+    local rc=$?
+    if [ $rc -eq 0 ]; then
+      echo "✅ $REPO — workflow added (branch: $branch)"
       ((ADDED++)) || true
-    else
-      echo "❌ $REPO — failed to add workflow (check permissions or empty repo)"
-      ((FAILED++)) || true
+      return 0
     fi
+    # 422 "sha wasn't supplied" means the file already exists
+    if echo "$err" | grep -q "sha"; then
+      echo "⏭️  $REPO — workflow already exists (branch: $branch), skipping"
+      ((SKIPPED++)) || true
+      return 0
+    fi
+    return 1
+  }
+
+  if _try_add main || _try_add master; then
+    : # handled inside _try_add
+  else
+    echo "❌ $REPO — failed to add workflow (check permissions or empty repo)"
+    ((FAILED++)) || true
   fi
 done
 
