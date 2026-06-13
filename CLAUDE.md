@@ -14,7 +14,7 @@ AI-powered QA agent for Python, Java, and HTML repos. Runs as a GitHub Actions r
 ```
 Timefrugal-QA/
 ├── qa_agent/
-│   ├── __init__.py          # version = 1.1.0
+│   ├── __init__.py          # version = 1.2.0
 │   ├── __main__.py          # CLI: python -m qa_agent [--ci|--base|--no-tests|--commit-tests|--model]
 │   ├── config.py            # all config via env vars (GITHUB_TOKEN, QA_AI_MODEL, etc.)
 │   ├── agent.py             # orchestrator: git diff → static analysis → AI review → report
@@ -77,6 +77,7 @@ Timefrugal-QA/
 - ~~GitHub API retry~~ — `pr_reporter.py` retries on HTTP 429, consistent with `ai_review.py` (2026-06-12)
 - ~~Pre-commit hook~~ — `.pre-commit-hooks.yaml` added for pre-commit framework integration (2026-06-12)
 - ~~Version bump~~ — 1.0.0 → 1.1.0 (2026-06-12)
+- ~~Version bump~~ — 1.1.0 → 1.2.0 (2026-06-13)
 - ~~Java and HTML language support~~ — language detection, PMD (Java), htmlhint (HTML), language-aware AI prompts and test generation (2026-06-13)
 
 ---
