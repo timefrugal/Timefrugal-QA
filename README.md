@@ -1,6 +1,6 @@
 # Timefrugal-QA
 
-AI-powered QA agent for Python repositories. Runs as a GitHub Actions reusable workflow **and** locally before raising a PR — catching issues early to minimize GitHub Actions usage and avoid PR iteration loops.
+AI-powered QA agent for **Python, Java, and HTML** repositories. Runs as a GitHub Actions reusable workflow **and** locally before raising a PR — catching issues early to minimize GitHub Actions usage and avoid PR iteration loops.
 
 **Cost: $0.** Uses [GitHub Models](https://github.com/marketplace/models) (free AI with any GitHub account) and open-source analysis tools only.
 
@@ -10,9 +10,10 @@ AI-powered QA agent for Python repositories. Runs as a GitHub Actions reusable w
 
 On every pull request (and optionally before raising one locally), the agent:
 
-1. **Static analysis** — runs bandit, semgrep, pylint, mypy, radon, and pip-audit on changed Python files
-2. **AI code review** — sends the diff + static findings to GitHub Models (`gpt-4o-mini`) acting as a senior engineer with 15+ years of experience; reviews for bugs, security vulnerabilities, architecture/design issues, and performance
-3. **Test generation** — generates comprehensive pytest test cases for changed code
+1. **Language detection** — automatically detects whether changed files are Python, Java, or HTML and selects the appropriate toolchain
+2. **Static analysis** — runs the right tools per language: bandit/pylint/mypy/radon/pip-audit for Python; PMD for Java; htmlhint for HTML; semgrep runs on all three
+3. **AI code review** — sends the diff + static findings to GitHub Models (`gpt-4o-mini`) with a language-specific prompt; reviews for bugs, security vulnerabilities, architecture/design issues, and performance
+4. **Test generation** — generates pytest tests for Python, JUnit 5 tests for Java (HTML skips — not applicable)
 4. **Reports** — posts a structured review comment on the PR, sets a commit status check (blocks merge if critical/high issues are found), and writes a formatted summary to the GitHub Actions step summary UI
 
 ---
@@ -59,7 +60,24 @@ export GITHUB_TOKEN=ghp_yourtoken   # needs repo scope
 bash scripts/setup_all_repos.sh
 ```
 
-Or add manually to a single repo by copying `templates/repo_workflow.yml` to `.github/workflows/qa.yml`.
+Or add to a single new repo immediately:
+
+```bash
+bash scripts/setup_new_repo.sh my-new-project
+# or with explicit owner:
+bash scripts/setup_new_repo.sh Timefrugal/my-new-project
+```
+
+### Step 2b — Auto-setup future repos (set and forget)
+
+Store a PAT as a repository secret so the daily scheduled workflow can add the QA agent to any new repos automatically.
+
+1. Create a **fine-grained PAT** at GitHub → Settings → Developer settings → Personal access tokens → Fine-grained tokens:
+   - Resource owner: your account
+   - Repository access: **All repositories**
+   - Permissions: **Contents** → Read and write
+2. Add it as a secret named `GH_PAT` in this repo (Timefrugal-QA → Settings → Secrets → Actions).
+3. Done. The `.github/workflows/auto-setup.yml` workflow runs daily and adds the QA workflow to any repo that's missing it. You can also trigger it manually from the Actions tab.
 
 ### Step 3 — Run locally before every PR
 
@@ -129,7 +147,8 @@ pre-commit install
 |---------|----------------|
 | GitHub Actions (CI) | `GITHUB_TOKEN` is automatically provided — no setup needed |
 | Local runner | Personal access token with `repo` scope (classic) or fine-grained token with read/write PR access |
-| setup_all_repos.sh | Personal access token with `repo` scope |
+| setup_all_repos.sh / setup_new_repo.sh | Personal access token with `repo` scope (classic) or fine-grained token with Contents read/write |
+| auto-setup.yml (scheduled) | Fine-grained PAT stored as `GH_PAT` secret — Contents read/write across all repos |
 
 ---
 
@@ -156,17 +175,33 @@ with:
 
 ---
 
+## Supported languages
+
+Language is detected automatically from the extensions of changed files.
+
+| Language | Extensions | Static analysis tools |
+|----------|-----------|----------------------|
+| Python | `.py` | semgrep, bandit, pylint, mypy, radon, pip-audit |
+| Java | `.java` | semgrep, PMD |
+| HTML | `.html` `.htm` | semgrep, htmlhint |
+
+PMD and htmlhint degrade gracefully if not installed — the agent logs a warning and continues with the remaining tools.
+
+---
+
 ## Free tools used
 
-| Tool | Purpose |
-|------|---------|
-| [GitHub Models](https://github.com/marketplace/models) | Free AI (`gpt-4o-mini`) — code review and test generation |
-| [bandit](https://bandit.readthedocs.io) | Python security linter |
-| [semgrep](https://semgrep.dev) | SAST — free community rules + bundled custom rules |
-| [pylint](https://pylint.org) | Code quality and bug detection |
-| [mypy](https://mypy-lang.org) | Static type checking |
-| [radon](https://radon.readthedocs.io) | Cyclomatic complexity |
-| [pip-audit](https://pypi.org/project/pip-audit/) | Dependency vulnerability scanning |
+| Tool | Language | Purpose |
+|------|----------|---------|
+| [GitHub Models](https://github.com/marketplace/models) | All | Free AI (`gpt-4o-mini`) — code review and test generation |
+| [semgrep](https://semgrep.dev) | All | SAST — free community rules + bundled custom rules |
+| [bandit](https://bandit.readthedocs.io) | Python | Security linter |
+| [pylint](https://pylint.org) | Python | Code quality and bug detection |
+| [mypy](https://mypy-lang.org) | Python | Static type checking |
+| [radon](https://radon.readthedocs.io) | Python | Cyclomatic complexity |
+| [pip-audit](https://pypi.org/project/pip-audit/) | Python | Dependency vulnerability scanning |
+| [PMD](https://pmd.github.io) | Java | Static analysis — bugs, style, best practices |
+| [htmlhint](https://htmlhint.com) | HTML | Linting — accessibility, structure, security |
 
 ---
 
