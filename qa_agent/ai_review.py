@@ -46,15 +46,7 @@ class AIReview:
 # Prompts
 # ──────────────────────────────────────────────
 
-SYSTEM_PROMPT = """You are a senior software engineer with 15+ years of experience reviewing Python code.
-Your role:
-1. Identify bugs, logic errors, and edge cases
-2. Spot security vulnerabilities (injection, auth bypass, insecure defaults, secrets in code, etc.)
-3. Evaluate architecture and design — suggest improvements where patterns are wrong or fragile
-4. Flag performance bottlenecks
-5. Note missing or inadequate error handling
-6. Assess testability
-
+_REVIEW_JSON_SCHEMA = """\
 Respond ONLY in valid JSON matching this schema:
 {
   "summary": "<2-3 sentence overall assessment>",
@@ -70,10 +62,46 @@ Respond ONLY in valid JSON matching this schema:
     }
   ]
 }
-Be precise and actionable. Do not hallucinate line numbers — use 0 if uncertain.
-"""
+Be precise and actionable. Do not hallucinate line numbers — use 0 if uncertain."""
 
-TEST_SYSTEM_PROMPT = """You are a senior Python test engineer with 15+ years of experience.
+_SYSTEM_PROMPTS: dict[str, str] = {
+    "python": f"""You are a senior software engineer with 15+ years of experience reviewing Python code.
+Your role:
+1. Identify bugs, logic errors, and edge cases
+2. Spot security vulnerabilities (injection, auth bypass, insecure defaults, secrets in code, etc.)
+3. Evaluate architecture and design — suggest improvements where patterns are wrong or fragile
+4. Flag performance bottlenecks
+5. Note missing or inadequate error handling
+6. Assess testability
+
+{_REVIEW_JSON_SCHEMA}
+""",
+    "java": f"""You are a senior software engineer with 15+ years of experience reviewing Java code.
+Your role:
+1. Identify bugs, logic errors, null pointer risks, and edge cases
+2. Spot security vulnerabilities (SQL injection, deserialization, XXE, SSRF, hardcoded secrets, etc.)
+3. Evaluate architecture and design — flag anti-patterns, poor use of generics, or tight coupling
+4. Flag performance issues (inefficient collections, N+1 queries, synchronization problems)
+5. Note missing or inadequate exception handling and resource leaks
+6. Assess testability and dependency injection
+
+{_REVIEW_JSON_SCHEMA}
+""",
+    "html": f"""You are a senior frontend developer with 15+ years of experience reviewing HTML templates.
+Your role:
+1. Identify XSS vectors — unescaped output, dangerous attribute values, inline event handlers
+2. Flag accessibility issues — missing alt text, poor semantic structure, unlabelled form fields
+3. Spot broken or unsafe links, missing CSP meta tags, and insecure form actions (HTTP action on HTTPS page)
+4. Note deprecated or non-standard elements and attributes
+5. Flag missing viewport meta, charset declarations, or ARIA misuse
+6. Assess overall semantic correctness and SEO impact
+
+{_REVIEW_JSON_SCHEMA}
+""",
+}
+
+_TEST_SYSTEM_PROMPTS: dict[str, str] = {
+    "python": """You are a senior Python test engineer with 15+ years of experience.
 Generate comprehensive pytest test cases for the provided Python code.
 
 Requirements:
@@ -85,7 +113,31 @@ Requirements:
 
 Respond with ONLY the raw Python test code, no markdown fences, no explanation.
 Start with the import block.
-"""
+""",
+    "java": """You are a senior Java test engineer with 15+ years of experience.
+Generate comprehensive JUnit 5 test cases for the provided Java code.
+
+Requirements:
+- Use JUnit 5 (@Test, @BeforeEach, Assertions) and Mockito for mocking
+- Cover: happy paths, edge cases, exceptions, null inputs, boundary conditions
+- Use descriptive @DisplayName annotations explaining what each test verifies
+- Tests must compile and run with standard JUnit 5 + Mockito imports
+
+Respond with ONLY the raw Java test code, no markdown fences, no explanation.
+Start with the package declaration if present, then imports.
+""",
+}
+
+
+def _get_review_prompt(language: str) -> str:
+    return _SYSTEM_PROMPTS.get(language, _SYSTEM_PROMPTS["python"])
+
+
+def _get_test_prompt(language: str) -> str:
+    return _TEST_SYSTEM_PROMPTS.get(language, _TEST_SYSTEM_PROMPTS["python"])
+
+
+_LANG_FENCE: dict[str, str] = {"python": "python", "java": "java", "html": "html"}
 
 
 # ──────────────────────────────────────────────
@@ -133,6 +185,7 @@ def review_code(
     file_contents: dict[str, str],
     static_results: AnalysisResults,
     repo_name: str = "",
+    language: str = "python",
 ) -> AIReview:
     """
     Send changed file contents + static analysis findings to GitHub Models AI.
@@ -151,11 +204,11 @@ def review_code(
         return review
 
     # Build the user message
+    fence = _LANG_FENCE.get(language, language)
     code_sections = []
     for filepath, content in file_contents.items():
-        # Truncate very large files to stay within token limits
         truncated = content[:6000] + ("\n... [truncated]" if len(content) > 6000 else "")
-        code_sections.append(f"### File: {filepath}\n```python\n{truncated}\n```")
+        code_sections.append(f"### File: {filepath}\n```{fence}\n{truncated}\n```")
 
     static_summary = _format_static_for_ai(static_results)
 
@@ -174,7 +227,7 @@ Please perform a thorough code review of the changed files above.
         response = _call_with_retry(lambda: client.chat.completions.create(
             model=config.AI_MODEL,
             messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": _get_review_prompt(language)},
                 {"role": "user", "content": user_msg},
             ],
             max_tokens=config.AI_MAX_TOKENS,
@@ -214,12 +267,13 @@ Please perform a thorough code review of the changed files above.
 def generate_tests(
     file_contents: dict[str, str],
     existing_test_files: Optional[dict[str, str]] = None,
+    language: str = "python",
 ) -> str:
     """
-    Generate pytest test cases for the provided Python files.
-    Returns a string of Python test code.
+    Generate test cases for the provided source files.
+    Returns Python (pytest) or Java (JUnit 5) test code; empty string for HTML.
     """
-    if not file_contents:
+    if not file_contents or language == "html":
         return ""
 
     try:
@@ -227,10 +281,11 @@ def generate_tests(
     except ValueError as e:
         return f"# Error: {e}\n"
 
+    fence = _LANG_FENCE.get(language, language)
     code_sections = []
     for filepath, content in file_contents.items():
         truncated = content[:5000] + ("\n... [truncated]" if len(content) > 5000 else "")
-        code_sections.append(f"### Source: {filepath}\n```python\n{truncated}\n```")
+        code_sections.append(f"### Source: {filepath}\n```{fence}\n{truncated}\n```")
 
     existing_sections = []
     if existing_test_files:
@@ -252,7 +307,7 @@ def generate_tests(
         response = _call_with_retry(lambda: client.chat.completions.create(
             model=config.AI_MODEL,
             messages=[
-                {"role": "system", "content": TEST_SYSTEM_PROMPT},
+                {"role": "system", "content": _get_test_prompt(language)},
                 {"role": "user", "content": user_msg},
             ],
             max_tokens=config.AI_MAX_TOKENS,

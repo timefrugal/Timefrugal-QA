@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from qa_agent import config
-from qa_agent.static_analysis import run_all, AnalysisResults
+from qa_agent.static_analysis import run_all, detect_language, AnalysisResults
 from qa_agent.ai_review import review_code, generate_tests
 
 
@@ -18,8 +18,8 @@ from qa_agent.ai_review import review_code, generate_tests
 # Git utilities
 # ──────────────────────────────────────────────
 
-def get_changed_python_files(base_ref: str = "origin/main") -> List[str]:
-    """Return list of changed .py files compared to base_ref."""
+def get_changed_files(base_ref: str = "origin/main") -> List[str]:
+    """Return list of changed Python, Java, and HTML files compared to base_ref."""
     try:
         result = subprocess.run(
             ["git", "diff", "--name-only", "--diff-filter=ACMR", base_ref, "HEAD"],
@@ -27,7 +27,8 @@ def get_changed_python_files(base_ref: str = "origin/main") -> List[str]:
         )
         files = [
             f.strip() for f in result.stdout.splitlines()
-            if f.strip().endswith(".py") and Path(f.strip()).exists()
+            if Path(f.strip()).suffix.lower() in config.SUPPORTED_EXTENSIONS
+            and Path(f.strip()).exists()
             and not any(excl in f for excl in config.EXCLUDE_PATTERNS)
         ]
         return files
@@ -127,22 +128,23 @@ def run(
 
     # ── 1. Discover changed files ──────────────────────────────────────
     print("[agent] Discovering changed files...")
-    changed = get_changed_python_files(base_ref)
+    changed = get_changed_files(base_ref)
 
     if not changed:
-        print("[agent] No Python files changed. Nothing to review.")
+        print("[agent] No supported files changed (Python, Java, HTML). Nothing to review.")
         if mode == "ci":
             _set_ci_status(blocked=False)
         return 0
 
-    print(f"[agent] Files to review: {', '.join(changed)}")
+    language = detect_language(changed)
+    print(f"[agent] Language detected: {language} | Files to review: {', '.join(changed)}")
 
     # ── 2. Read file contents ──────────────────────────────────────────
     file_contents = read_file_contents(changed)
-    existing_tests = find_existing_tests(changed)
+    existing_tests = find_existing_tests(changed) if language == "python" else {}
 
     # ── 3. Static analysis ────────────────────────────────────────────
-    print("[agent] Running static analysis (bandit, semgrep, pylint, mypy, radon, pip-audit)...")
+    print(f"[agent] Running static analysis for {language}...")
     static_results = run_all(changed, project_root=project_root)
     s = static_results.summary()
     print(
@@ -151,18 +153,20 @@ def run(
     )
 
     # ── 4+5. AI code review + test generation (parallel) ──────────────
+    skip_tests = not generate_test_cases or not file_contents or language == "html"
     print(f"[agent] Sending to GitHub Models AI ({config.AI_MODEL}) for code review"
-          + (" + test generation..." if generate_test_cases and file_contents else "..."))
+          + (" + test generation..." if not skip_tests else "..."))
     with ThreadPoolExecutor(max_workers=2) as pool:
         review_future = pool.submit(
             review_code,
             file_contents=file_contents,
             static_results=static_results,
             repo_name=config.GITHUB_REPOSITORY,
+            language=language,
         )
         tests_future = (
-            pool.submit(generate_tests, file_contents, existing_tests)
-            if generate_test_cases and file_contents else None
+            pool.submit(generate_tests, file_contents, existing_tests, language)
+            if not skip_tests else None
         )
         ai_review = review_future.result()
         generated_tests = tests_future.result() if tests_future is not None else ""

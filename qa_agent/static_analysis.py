@@ -15,6 +15,20 @@ from qa_agent import config
 _SEMGREP_RULES_DIR = Path(__file__).parent / "semgrep_rules"
 
 
+def detect_language(files: List[str]) -> str:
+    """Return the dominant language ('python', 'java', or 'html') in the file list."""
+    counts: dict[str, int] = {"python": 0, "java": 0, "html": 0}
+    for f in files:
+        ext = Path(f).suffix.lower()
+        if ext in config.PYTHON_EXTENSIONS:
+            counts["python"] += 1
+        elif ext in config.JAVA_EXTENSIONS:
+            counts["java"] += 1
+        elif ext in config.HTML_EXTENSIONS:
+            counts["html"] += 1
+    return max(counts, key=counts.get) if any(counts.values()) else "python"
+
+
 @dataclass
 class Finding:
     tool: str
@@ -93,6 +107,12 @@ def _semgrep_severity(sg_sev: str) -> str:
         "INFO": config.SEVERITY_MEDIUM,
     }
     return mapping.get(sg_sev.upper(), config.SEVERITY_INFO)
+
+
+def _pmd_severity(priority: int) -> str:
+    # PMD priority: 1=Critical, 2=High, 3=Medium, 4=Low, 5=Info
+    return {1: config.SEVERITY_CRITICAL, 2: config.SEVERITY_HIGH,
+            3: config.SEVERITY_MEDIUM, 4: config.SEVERITY_LOW}.get(priority, config.SEVERITY_INFO)
 
 
 def _pylint_severity(msg_type: str) -> str:
@@ -340,28 +360,120 @@ def run_pip_audit(project_root: str = ".") -> AnalysisResults:
     return results
 
 
+def run_pmd(files: List[str]) -> AnalysisResults:
+    """Run PMD 7+ for Java static analysis (graceful degradation if not installed)."""
+    results = AnalysisResults()
+    if not files:
+        return results
+
+    cmd = [
+        config.PMD_CMD, "check",
+        "-d", ",".join(files),
+        "-R", "rulesets/java/quickstart.xml",
+        "-f", "json",
+        "--no-progress-bar",
+    ]
+    rc, stdout, stderr = _run(cmd)
+
+    if rc == -1:
+        results.errors.append(f"pmd: {stderr}")
+        return results
+
+    try:
+        data = json.loads(stdout)
+    except json.JSONDecodeError:
+        results.errors.append("pmd: could not parse output")
+        return results
+
+    for file_result in data.get("files", []):
+        filename = file_result.get("filename", "")
+        for v in file_result.get("violations", []):
+            results.findings.append(Finding(
+                tool="pmd",
+                severity=_pmd_severity(v.get("priority", 3)),
+                category="quality",
+                file=filename,
+                line=v.get("beginline", 0),
+                message=v.get("description", ""),
+                rule_id=v.get("rule", ""),
+            ))
+
+    return results
+
+
+def run_htmlhint(files: List[str]) -> AnalysisResults:
+    """Run htmlhint for HTML linting (graceful degradation if not installed)."""
+    results = AnalysisResults()
+    if not files:
+        return results
+
+    cmd = [config.HTMLHINT_CMD, "--format", "json"] + files
+    rc, stdout, stderr = _run(cmd)
+
+    if rc == -1:
+        results.errors.append(f"htmlhint: {stderr}")
+        return results
+
+    try:
+        data = json.loads(stdout or "[]")
+    except json.JSONDecodeError:
+        results.errors.append("htmlhint: could not parse output")
+        return results
+
+    for file_result in data:
+        filename = file_result.get("file", "")
+        for msg in file_result.get("messages", []):
+            severity = (
+                config.SEVERITY_HIGH if msg.get("type") == "error"
+                else config.SEVERITY_MEDIUM
+            )
+            results.findings.append(Finding(
+                tool="htmlhint",
+                severity=severity,
+                category="quality",
+                file=filename,
+                line=msg.get("line", 0),
+                message=msg.get("message", ""),
+                rule_id=msg.get("rule", ""),
+            ))
+
+    return results
+
+
 # ──────────────────────────────────────────────
 # Orchestrator
 # ──────────────────────────────────────────────
 
 def run_all(files: List[str], project_root: str = ".") -> AnalysisResults:
     """
-    Run all static analysis tools on the given list of Python files.
+    Run static analysis tools appropriate for the languages present in `files`.
+    Supports Python (.py), Java (.java), and HTML (.html/.htm).
     Returns a merged AnalysisResults.
     """
     combined = AnalysisResults()
 
-    # Filter to only existing Python files
-    py_files = [f for f in files if f.endswith(".py") and Path(f).exists()]
+    existing = [f for f in files if Path(f).exists()]
+    py_files   = [f for f in existing if Path(f).suffix.lower() in config.PYTHON_EXTENSIONS]
+    java_files = [f for f in existing if Path(f).suffix.lower() in config.JAVA_EXTENSIONS]
+    html_files = [f for f in existing if Path(f).suffix.lower() in config.HTML_EXTENSIONS]
+    all_supported = py_files + java_files + html_files
 
-    runners = {
-        "bandit":    lambda: run_bandit(py_files),
-        "semgrep":   lambda: run_semgrep(py_files),
-        "pylint":    lambda: run_pylint(py_files),
-        "mypy":      lambda: run_mypy(py_files),
-        "radon":     lambda: run_radon(py_files),
-        "pip-audit": lambda: run_pip_audit(project_root),
-    }
+    runners: dict = {}
+    if all_supported:
+        runners["semgrep"] = lambda: run_semgrep(all_supported)
+    if py_files:
+        runners["bandit"]    = lambda: run_bandit(py_files)
+        runners["pylint"]    = lambda: run_pylint(py_files)
+        runners["mypy"]      = lambda: run_mypy(py_files)
+        runners["radon"]     = lambda: run_radon(py_files)
+        runners["pip-audit"] = lambda: run_pip_audit(project_root)
+    if java_files:
+        runners["pmd"] = lambda: run_pmd(java_files)
+    if html_files:
+        runners["htmlhint"] = lambda: run_htmlhint(html_files)
+
+    if not runners:
+        return combined
 
     with ThreadPoolExecutor(max_workers=len(runners)) as pool:
         futures = {pool.submit(fn): name for name, fn in runners.items()}

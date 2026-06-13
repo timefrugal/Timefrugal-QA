@@ -52,6 +52,19 @@ MYPY_CMD = "mypy"
 RADON_CMD = "radon"
 PIP_AUDIT_CMD = "pip-audit"
 
+# ──────────────────────────────────────────────
+# Supported languages and file extensions
+# ──────────────────────────────────────────────
+PYTHON_EXTENSIONS = {".py"}
+JAVA_EXTENSIONS = {".java"}
+HTML_EXTENSIONS = {".html", ".htm"}
+SUPPORTED_EXTENSIONS = PYTHON_EXTENSIONS | JAVA_EXTENSIONS | HTML_EXTENSIONS
+
+# Java static analysis (PMD 7+)
+PMD_CMD = "pmd"
+# HTML linting
+HTMLHINT_CMD = "htmlhint"
+
 # Files/dirs to always skip
 EXCLUDE_PATTERNS = [
     "migrations/",
