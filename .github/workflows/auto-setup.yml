@@ -16,5 +16,7 @@ jobs:
 
       - name: Add QA workflow to all repos
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT }}
-        run: bash scripts/setup_all_repos.sh
+          SETUP_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          export GH_TOKEN="$SETUP_PAT"
+          bash scripts/setup_all_repos.sh
