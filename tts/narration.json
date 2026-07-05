@@ -1,0 +1,68 @@
+[
+  {
+    "id": "s1_open",
+    "voice": "en-US-AndrewNeural",
+    "rate": "-4%",
+    "text": "Every household runs on memory. Appointments. Medicines. Money. The gate you forgot to close. This is the story of a house that remembers — so its people don't have to."
+  },
+  {
+    "id": "s2_problem",
+    "voice": "en-US-AndrewNeural",
+    "rate": "-2%",
+    "text": "Big Tech will happily rent you a listener. But your voice, your habits, your home — become their data. One family chose a different path. Build it yourself. Own every byte. And pay: nothing. Zero dollars a month."
+  },
+  {
+    "id": "s3_maya_hello",
+    "voice": "en-IN-NeerjaNeural",
+    "rate": "+0%",
+    "text": "Namaste! I'm Maya."
+  },
+  {
+    "id": "s3_maya",
+    "voice": "en-US-AndrewNeural",
+    "rate": "-2%",
+    "text": "Maya is the face and the voice. English, Hindi, or both in the same sentence. She reads the markets with a committee of analyst minds, sorts the inbox down to the three emails that matter, remembers everything you tell her — and runs the home."
+  },
+  {
+    "id": "s4_pantheon",
+    "voice": "en-US-AndrewNeural",
+    "rate": "-2%",
+    "text": "But one mind alone should never be trusted with everything. So the household became a pantheon. Chakra: security. He guards the family against scammers, deep-fakes, and intrusions — and he watches Maya herself. Samay: the eternal diary. Every action, every decision, recorded forever. Tamper-proof. Narad: the messenger. Every word between agents passes through him — logged, and policed. And Krishna: counsel. He sees everything, and touches nothing. He advises. The family decides."
+  },
+  {
+    "id": "s5_day",
+    "voice": "en-US-AndrewNeural",
+    "rate": "-2%",
+    "text": "Morning: one brief. Markets, weather, the emails that matter. Afternoon: should I buy this stock? Four analysts — value, growth, risk, and the India specialist — debate it in seconds, and you hear the verdict, with the reasoning."
+  },
+  {
+    "id": "s6_home",
+    "voice": "en-US-AndrewNeural",
+    "rate": "-2%",
+    "text": "Maya, lights. Is the garage closed? The house obeys. And homes an ocean away report in: a camera in India spots motion at the gate — only the event crosses the sea, never the video. Every property, one private network. No cloud in the middle."
+  },
+  {
+    "id": "s7_chakra_line",
+    "voice": "en-IN-PrabhatNeural",
+    "rate": "-4%",
+    "text": "That caller is not your grandson. It failed the family code word. Hang up — I've already blocked the number."
+  },
+  {
+    "id": "s7_protection",
+    "voice": "en-US-AndrewNeural",
+    "rate": "-2%",
+    "text": "Every new power the system gains must be earned — through trust tiers, promoted only on evidence. Every action lands in Samay's ledger. And if anything ever feels wrong: one button freezes it all. The kill switch lives outside the machine."
+  },
+  {
+    "id": "s8_aging",
+    "voice": "en-US-AndrewNeural",
+    "rate": "-4%",
+    "text": "This isn't a gadget. It's a fifty-year plan. Memory that doesn't fade. Guardians that don't sleep. And decades from now, the house will still answer — in whichever language its family dreamed in last night."
+  },
+  {
+    "id": "s9_close",
+    "voice": "en-US-AndrewNeural",
+    "rate": "-2%",
+    "text": "Built on free tiers and open source. Nothing rented. Nothing surveilled. Zero dollars a month. Maya, and the Pantheon. A household with a mind."
+  }
+]

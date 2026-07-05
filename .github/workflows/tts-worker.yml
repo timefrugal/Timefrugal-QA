@@ -1,0 +1,30 @@
+name: TTS Worker
+# Scratch utility for the DJpixel9Fold mobile session: generates narration
+# audio (edge-tts needs internet the sandbox doesn't have) and commits the
+# MP3s back to this branch. Lives only on the dev branch — never merge.
+
+on:
+  push:
+    branches: [claude/repo-access-rbexft]
+    paths: ['tts/narration.json', 'tts/generate.py', '.github/workflows/tts-worker.yml']
+
+permissions:
+  contents: write
+
+jobs:
+  tts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install edge-tts
+      - run: python tts/generate.py
+      - name: Commit audio back
+        run: |
+          git config user.name "tts-worker"
+          git config user.email "actions@users.noreply.github.com"
+          git add tts/out
+          git commit -m "TTS narration output [skip ci]" || echo "nothing to commit"
+          git push
