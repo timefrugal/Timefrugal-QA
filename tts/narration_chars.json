@@ -1,9 +1,15 @@
 [
   {
-    "id": "maya_c1_title",
+    "id": "maya_c1_title_hi",
     "voice": "en-IN-NeerjaNeural",
     "rate": "+0%",
-    "text": "Namaste Monika! Main Maya hoon. Let me tell you properly who I am, and what I actually do for you and DJ, every single day."
+    "text": "Namaste Monika! Main Maya hoon."
+  },
+  {
+    "id": "maya_c1_title_en",
+    "voice": "en-US-AriaNeural",
+    "rate": "+0%",
+    "text": "Let me tell you properly who I am, and what I actually do for you and DJ, every single day."
   },
   {
     "id": "maya_c2_who",
@@ -38,7 +44,7 @@
 
   {
     "id": "chakra_c1_title",
-    "voice": "en-IN-PrabhatNeural",
+    "voice": "en-US-GuyNeural",
     "rate": "-2%",
     "text": "I am Chakra. I don't do small talk. I do one job: nobody hurts this family. Not a hacker. Not a scammer. Not even Maya, if she ever goes wrong."
   },
