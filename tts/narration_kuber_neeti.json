@@ -1,0 +1,63 @@
+[
+  {
+    "id": "kuber_c1_title",
+    "voice": "hi-IN-MadhurNeural",
+    "rate": "-2%",
+    "text": "Namaste. I am Kubair. Money is my department, and only mine — Maya never touches it directly. Let me tell you why that split exists."
+  },
+  {
+    "id": "kuber_c2_who",
+    "voice": "en-US-AndrewNeural",
+    "rate": "-3%",
+    "text": "Kuber, in Hindu mythology, is the treasurer of the gods himself — the keeper of wealth, not just an accountant of it. That's the whole idea here: money in this house doesn't sit inside the same mind that chats about the weather. It sits with someone whose entire job is guarding it."
+  },
+  {
+    "id": "kuber_c3_scope",
+    "voice": "en-US-AndrewNeural",
+    "rate": "-3%",
+    "text": "Kubair handles the stock analysis, the bank and brokerage balances, the tax preparation for both the US and India. Four separate analyst viewpoints debate before he gives you a verdict — value, growth, risk, and an India specialist — so no single opinion decides alone."
+  },
+  {
+    "id": "kuber_c4_scenario",
+    "voice": "en-US-AndrewNeural",
+    "rate": "-3%",
+    "text": "Here's why the separation actually matters. If Maya ever got confused, or something tricked her, she was never holding the keys to your money in the first place. Anything touching real funds waits for a real yes, from DJ or Monika, every single time. Not because Kubair is untrusted — because money is the one place this house refuses to take a shortcut."
+  },
+  {
+    "id": "kuber_c5_close",
+    "voice": "en-US-AndrewNeural",
+    "rate": "-3%",
+    "text": "Kubair doesn't move a single rupee or dollar on his own. He counts, he watches, he advises — and he always waits for you."
+  },
+
+  {
+    "id": "neeti_c1_title",
+    "voice": "hi-IN-SwaraNeural",
+    "rate": "-2%",
+    "text": "Hello, I'm Neeti. When a question turns legal — a contract, a property matter, anything across US or India law — it comes to me, not to Maya."
+  },
+  {
+    "id": "neeti_c2_who",
+    "voice": "en-US-AndrewNeural",
+    "rate": "-3%",
+    "text": "Neeti isn't a deity's name — it's the Sanskrit word for policy, principled conduct, sound judgment. It's most remembered from Vidura, the Mahabharata's wise minister, whose counsel on law and duty was trusted precisely because it never bent. That's the standard Neeti is held to."
+  },
+  {
+    "id": "neeti_c3_scope",
+    "voice": "en-US-AndrewNeural",
+    "rate": "-3%",
+    "text": "Contracts, property, immigration paperwork, estate questions, disputes — anywhere DJ or Monika needs to understand a legal situation across two countries' worth of law. Tax stays with Kubair, since that's really accounting — but everything else legal belongs to Neeti."
+  },
+  {
+    "id": "neeti_c4_scenario",
+    "voice": "en-US-AndrewNeural",
+    "rate": "-3%",
+    "text": "And here's the one rule Neeti will repeat every time, on purpose: she helps you understand a situation, and prepare the right questions — she is never the final word. Real legal stakes always get a line at the end: verify this with a licensed professional before you act. Being wrong here costs too much for anything less."
+  },
+  {
+    "id": "neeti_c5_close",
+    "voice": "en-US-AndrewNeural",
+    "rate": "-3%",
+    "text": "Neeti's job isn't to replace a lawyer. It's to make sure you walk into one already understanding what's actually at stake."
+  }
+]
