@@ -8,7 +8,8 @@ import edge_tts
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(HERE, "out")
-MAX_ATTEMPTS = 4
+MAX_ATTEMPTS = 5
+PACE_SECONDS = 1.2  # edge-tts's backend throttles bursts of back-to-back requests
 
 
 async def synth(text, voice, rate, path):
@@ -20,7 +21,7 @@ async def synth(text, voice, rate, path):
         except Exception as e:
             if attempt == MAX_ATTEMPTS:
                 raise
-            wait = 2 * attempt
+            wait = 5 * (2 ** (attempt - 1))
             print(f"  retry {attempt}/{MAX_ATTEMPTS} after error ({e}); waiting {wait}s")
             await asyncio.sleep(wait)
 
@@ -34,6 +35,7 @@ async def main():
             path = os.path.join(OUT, f"{s['id']}.mp3")
             await synth(s["text"], s["voice"], s.get("rate", "+0%"), path)
             print(f"{s['id']}: {os.path.getsize(path)} bytes")
+            await asyncio.sleep(PACE_SECONDS)
 
 
 if __name__ == "__main__":
