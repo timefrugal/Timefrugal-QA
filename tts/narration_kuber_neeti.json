@@ -1,7 +1,7 @@
 [
   {
     "id": "kuber_c1_title",
-    "voice": "en-US-DavisNeural",
+    "voice": "en-US-AndrewNeural",
     "rate": "-2%",
     "text": "Namaste. I am Kubair. Money is my department, and only mine — Maya never touches it directly. Let me tell you why that split exists."
   },
@@ -32,7 +32,7 @@
 
   {
     "id": "neeti_c1_title",
-    "voice": "en-US-JennyNeural",
+    "voice": "en-US-AriaNeural",
     "rate": "-2%",
     "text": "Hello, I'm Neeti. When a question turns legal — a contract, a property matter, anything across US or India law — it comes to me, not to Maya."
   },
