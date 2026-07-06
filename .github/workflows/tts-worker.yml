@@ -6,7 +6,7 @@ name: TTS Worker
 on:
   push:
     branches: [claude/repo-access-rbexft]
-    paths: ['tts/narration.json', 'tts/generate.py', '.github/workflows/tts-worker.yml']
+    paths: ['tts/narration*.json', 'tts/generate.py', '.github/workflows/tts-worker.yml']
 
 permissions:
   contents: write

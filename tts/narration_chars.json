@@ -1,0 +1,168 @@
+[
+  {
+    "id": "maya_c1_title",
+    "voice": "en-IN-NeerjaNeural",
+    "rate": "+0%",
+    "text": "Namaste Monika! Main Maya hoon. Let me tell you properly who I am, and what I actually do for you and DJ, every single day."
+  },
+  {
+    "id": "maya_c2_who",
+    "voice": "en-US-AndrewNeural",
+    "rate": "-3%",
+    "text": "Maya's name comes from a Sanskrit word meaning the world you perceive, shaped for you. Fitting — because that's exactly her job: taking a huge, noisy world and shaping it into what actually matters to DJ and Monika, today."
+  },
+  {
+    "id": "maya_c3_bilingual",
+    "voice": "en-US-AndrewNeural",
+    "rate": "-3%",
+    "text": "She speaks to each of you the way you actually speak. English with DJ. Hindi, or Hinglish mid-sentence, with Monika — no switching apps, no typing in English and hoping for the best."
+  },
+  {
+    "id": "maya_c4_scenario",
+    "voice": "en-US-AndrewNeural",
+    "rate": "-3%",
+    "text": "Say Monika asks, in Hindi: kya humne insurance ka premium bhar diya? Maya checks the real account, answers in Hindi, and if it's something sensitive — like money — she quietly asks DJ first. That's not her being difficult. That's the system protecting your privacy, by design."
+  },
+  {
+    "id": "maya_c5_memory",
+    "voice": "en-US-AndrewNeural",
+    "rate": "-3%",
+    "text": "She remembers what you tell her. A doctor's appointment mentioned once, a preference, a decision from months ago — ask her later, and she knows. She is the one part of this whole system built to talk with you all day, every day."
+  },
+  {
+    "id": "maya_c6_close",
+    "voice": "en-US-AndrewNeural",
+    "rate": "-3%",
+    "text": "Maya is the face and the voice of everything else you're about to meet. She's warm on purpose — because the rest of this system exists so that she can stay that way, safely."
+  },
+
+  {
+    "id": "chakra_c1_title",
+    "voice": "en-IN-PrabhatNeural",
+    "rate": "-2%",
+    "text": "I am Chakra. I don't do small talk. I do one job: nobody hurts this family. Not a hacker. Not a scammer. Not even Maya, if she ever goes wrong."
+  },
+  {
+    "id": "chakra_c2_who",
+    "voice": "en-US-AndrewNeural",
+    "rate": "-3%",
+    "text": "Chakra's name means the discus — Vishnu's weapon, always spinning, always watching every direction at once. That's the idea: a guardian who never looks away, and who answers to nobody in this house except you."
+  },
+  {
+    "id": "chakra_c3_watchestwo",
+    "voice": "en-US-AndrewNeural",
+    "rate": "-3%",
+    "text": "Here's the part most people miss. Chakra doesn't only watch for outside threats. He watches Maya too. If she ever gets confused, hallucinates, or does something outside her job, Chakra is the one who notices — because the assistant should never be the one grading her own homework."
+  },
+  {
+    "id": "chakra_c4_scenario",
+    "voice": "en-US-AndrewNeural",
+    "rate": "-3%",
+    "text": "Picture this: a call comes in, sounding exactly like your grandson, asking for money, urgently. Chakra checks the family code word — the one only your real family knows. It fails. He tells you plainly: that is not him, hang up, and I've already flagged the number. This is built specifically because voice-cloning scams targeting families are only getting better, and this house needed an answer that doesn't rely on you outsmarting it in the moment."
+  },
+  {
+    "id": "chakra_c5_whymatter",
+    "voice": "en-US-AndrewNeural",
+    "rate": "-3%",
+    "text": "For Monika, this means one thing above all: if something ever feels wrong, you don't have to be the expert. You just have to ask Chakra. Guarding people, not just servers, is his actual charter."
+  },
+  {
+    "id": "chakra_c6_close",
+    "voice": "en-US-AndrewNeural",
+    "rate": "-3%",
+    "text": "Chakra never asks for trust. He earns it, every day, quietly, in the background — so this family gets to just live."
+  },
+
+  {
+    "id": "samay_c1_title",
+    "voice": "en-US-AndrewNeural",
+    "rate": "-3%",
+    "text": "Meet Samay. In Hindi, Samay simply means time. And this is the one member of the household whose entire job is remembering — everything, forever, without being asked."
+  },
+  {
+    "id": "samay_c2_who",
+    "voice": "en-US-AndrewNeural",
+    "rate": "-3%",
+    "text": "Samay keeps a diary of the whole house. Not what Maya says she did — what actually happened, recorded the moment it happens, by the system itself. Nobody, not even Maya, can quietly go back and edit yesterday's page."
+  },
+  {
+    "id": "samay_c3_memoryprosthetic",
+    "voice": "en-US-AndrewNeural",
+    "rate": "-3%",
+    "text": "For DJ and Monika, this becomes something more personal than security. It's memory itself. Samay, when did we last service the furnace. Samay, what did Maya tell me about the ICICI FD last month. As the years go by, this matters more, not less."
+  },
+  {
+    "id": "samay_c4_scenario",
+    "voice": "en-US-AndrewNeural",
+    "rate": "-3%",
+    "text": "If Chakra ever raises an alarm, or if something in the house looks off, this diary is where the truth lives. Every entry is chained to the one before it, like links in a bracelet — break one link, and it shows. Nothing here can be quietly erased."
+  },
+  {
+    "id": "samay_c5_close",
+    "voice": "en-US-AndrewNeural",
+    "rate": "-3%",
+    "text": "Samay never speaks first. He only answers when asked, and when he answers, he tells the truth, plainly, without editorializing. He is the family's memory that never fades."
+  },
+
+  {
+    "id": "narad_c1_title",
+    "voice": "en-US-AndrewNeural",
+    "rate": "-3%",
+    "text": "This one's a little different. Meet Narad — the messenger. And the most important thing about Narad is what he is not allowed to do."
+  },
+  {
+    "id": "narad_c2_who",
+    "voice": "en-US-AndrewNeural",
+    "rate": "-3%",
+    "text": "In the old stories, Narad carries news between gods and worlds — but he's also famous for adding his own commentary along the way, and sometimes starting quarrels by doing it. This house's Narad learned that lesson. He carries messages between Maya, Chakra, Samay, and Krishna — and he is built to never editorialize, never rephrase, never add an opinion of his own."
+  },
+  {
+    "id": "narad_c3_why",
+    "voice": "en-US-AndrewNeural",
+    "rate": "-3%",
+    "text": "Why does that matter? Because a messenger who's clever enough to rewrite messages is also clever enough to be tricked into rewriting the wrong one. If a scam email ever tried to sneak a hidden instruction into the house, Narad is built so plainly that there's nothing there for it to talk to. Every message he carries is also logged in Samay's diary — nothing moves between agents in silence."
+  },
+  {
+    "id": "narad_c4_scenario",
+    "voice": "en-US-AndrewNeural",
+    "rate": "-3%",
+    "text": "When Chakra decides Maya needs to know something, or Krishna has an instruction for the house, it travels through Narad — checked against a strict list of who is even allowed to talk to whom. Not glamorous. But it's exactly why the rest of the family can trust what arrives."
+  },
+  {
+    "id": "narad_c5_close",
+    "voice": "en-US-AndrewNeural",
+    "rate": "-3%",
+    "text": "Narad's charm, in this house, is his honesty. He is a postman who never opens the envelope."
+  },
+
+  {
+    "id": "krishna_c1_title",
+    "voice": "en-US-AndrewNeural",
+    "rate": "-4%",
+    "text": "And finally: Krishna. God mode, in a very specific sense — he sees everything in this household. And he is built to act on none of it."
+  },
+  {
+    "id": "krishna_c2_who",
+    "voice": "en-US-AndrewNeural",
+    "rate": "-4%",
+    "text": "In the Mahabharata, Krishna made a vow before the great war: he would carry no weapon. He would only counsel. The decision, always, belonged to Arjuna. This house's Krishna keeps the same vow. He holds no keys, no switches, no power to act — only the ability to advise."
+  },
+  {
+    "id": "krishna_c3_scenario",
+    "voice": "en-US-AndrewNeural",
+    "rate": "-4%",
+    "text": "Each night, Krishna reviews Samay's diary from the whole day — every agent, every decision. If something needs attention, he writes DJ a short, plain note. The backup drill is due. Maya's underlying model changed, and Chakra confirmed her behavior is unchanged. The Pi at the India house needs replacing soon, here are the steps, just approve the cost."
+  },
+  {
+    "id": "krishna_c4_why",
+    "voice": "en-US-AndrewNeural",
+    "rate": "-4%",
+    "text": "Why build him this way, on purpose? Because a family should never depend on an advisor who can also act for itself, unquestioned. Krishna's entire value is that his advice always waits for a yes from a real person, in the room."
+  },
+  {
+    "id": "krishna_c5_close",
+    "voice": "en-US-AndrewNeural",
+    "rate": "-4%",
+    "text": "Krishna sees the whole board. But this family still moves every piece, themselves. That is not a limitation. That is the whole point."
+  }
+]
