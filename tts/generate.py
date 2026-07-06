@@ -8,6 +8,21 @@ import edge_tts
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(HERE, "out")
+MAX_ATTEMPTS = 4
+
+
+async def synth(text, voice, rate, path):
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        try:
+            c = edge_tts.Communicate(text, voice, rate=rate)
+            await c.save(path)
+            return
+        except Exception as e:
+            if attempt == MAX_ATTEMPTS:
+                raise
+            wait = 2 * attempt
+            print(f"  retry {attempt}/{MAX_ATTEMPTS} after error ({e}); waiting {wait}s")
+            await asyncio.sleep(wait)
 
 
 async def main():
@@ -17,8 +32,7 @@ async def main():
             scenes = json.load(f)
         for s in scenes:
             path = os.path.join(OUT, f"{s['id']}.mp3")
-            c = edge_tts.Communicate(s["text"], s["voice"], rate=s.get("rate", "+0%"))
-            await c.save(path)
+            await synth(s["text"], s["voice"], s.get("rate", "+0%"), path)
             print(f"{s['id']}: {os.path.getsize(path)} bytes")
 
 
