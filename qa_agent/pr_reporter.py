@@ -225,13 +225,13 @@ def _build_comment(
     # AI review findings
     if ai.findings:
         parts.append("### 🤖 AI Code Review")
-        for f in sorted(ai.findings, key=lambda x: config.SEVERITY_ORDER.index(x.severity)):
-            emoji = SEVERITY_EMOJI.get(f.severity, "⚪")
-            loc = f"`{f.file}:{f.line}`" if f.line else f"`{f.file}`"
-            parts.append(f"- {emoji} **[{f.severity} / {f.category}]** {loc}")
-            parts.append(f"  - **Issue:** {f.message}")
-            if f.suggestion:
-                parts.append(f"  - **Fix:** {f.suggestion}")
+        for af in sorted(ai.findings, key=lambda x: config.SEVERITY_ORDER.index(x.severity)):
+            emoji = SEVERITY_EMOJI.get(af.severity, "⚪")
+            loc = f"`{af.file}:{af.line}`" if af.line else f"`{af.file}`"
+            parts.append(f"- {emoji} **[{af.severity} / {af.category}]** {loc}")
+            parts.append(f"  - **Issue:** {af.message}")
+            if af.suggestion:
+                parts.append(f"  - **Fix:** {af.suggestion}")
         parts.append("")
 
     # Architecture notes
