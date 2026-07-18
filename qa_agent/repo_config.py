@@ -42,18 +42,39 @@ def load_repo_config(project_root: str) -> RepoConfig:
         )
         return RepoConfig()
     ai = data.get("ai", {}) or {}
+    if not isinstance(ai, dict):
+        print(
+            f"[repo_config] {path}: 'ai' did not parse to a mapping -- ignoring",
+            file=sys.stderr,
+        )
+        ai = {}
+    severity_overrides = data.get("severity_overrides", {}) or {}
+    if not isinstance(severity_overrides, dict):
+        print(
+            f"[repo_config] {path}: 'severity_overrides' did not parse to a mapping"
+            " -- ignoring",
+            file=sys.stderr,
+        )
+        severity_overrides = {}
+    ignore = data.get("ignore", {}) or {}
+    if not isinstance(ignore, dict):
+        print(
+            f"[repo_config] {path}: 'ignore' did not parse to a mapping -- ignoring",
+            file=sys.stderr,
+        )
+        ignore = {}
     return RepoConfig(
         ai_blocking=bool(ai.get("blocking", False)),
         block_merge_threshold=data.get("block_merge_threshold"),
-        severity_overrides=data.get("severity_overrides", {}) or {},
-        ignore=data.get("ignore", {}) or {},
+        severity_overrides=severity_overrides,
+        ignore=ignore,
     )
 
 
 def filter_ignored(findings: List, ignore_map: Dict) -> List:
     """Remove findings whose (tool, rule_id) appears in ignore_map. tool names
     are normalized (hyphens -> underscores) to match YAML keys like pip_audit."""
-    if not ignore_map:
+    if not ignore_map or not isinstance(ignore_map, dict):
         return findings
     out = []
     for f in findings:

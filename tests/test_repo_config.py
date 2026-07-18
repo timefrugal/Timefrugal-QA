@@ -99,6 +99,37 @@ ignore:
         self.assertEqual(cfg.ignore, {})
 
 
+class TestLoadRepoConfigMalformedFieldTypes(unittest.TestCase):
+    """Regression coverage for fields that parse fine at the top level but are
+    the wrong type underneath (e.g. `ai: "yes"` instead of `ai: {...}`).
+    Each of these must fall back to that field's default, not raise."""
+
+    def test_ai_as_string_falls_back_to_default_without_raising(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, ".timefrugal-qa.yml")
+            with open(path, "w") as f:
+                f.write('ai: "yes"\n')
+            cfg = load_repo_config(tmpdir)  # must not raise
+        self.assertEqual(cfg, RepoConfig())
+        self.assertFalse(cfg.ai_blocking)
+
+    def test_ignore_as_string_falls_back_to_empty_dict_without_raising(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, ".timefrugal-qa.yml")
+            with open(path, "w") as f:
+                f.write('ignore: "bogus"\n')
+            cfg = load_repo_config(tmpdir)  # must not raise
+        self.assertEqual(cfg.ignore, {})
+
+    def test_severity_overrides_as_string_falls_back_to_empty_dict_without_raising(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, ".timefrugal-qa.yml")
+            with open(path, "w") as f:
+                f.write('severity_overrides: "not a dict"\n')
+            cfg = load_repo_config(tmpdir)  # must not raise
+        self.assertEqual(cfg.severity_overrides, {})
+
+
 class TestFilterIgnored(unittest.TestCase):
     def _finding(self, tool, rule_id, severity="HIGH", category="security"):
         return Finding(
@@ -133,6 +164,14 @@ class TestFilterIgnored(unittest.TestCase):
     def test_empty_ignore_map_returns_findings_unchanged(self):
         findings = [self._finding("bandit", "B101")]
         out = filter_ignored(findings, {})
+        self.assertEqual(out, findings)
+
+    def test_non_dict_ignore_map_returns_findings_unchanged_without_raising(self):
+        # Belt-and-suspenders: load_repo_config should never let a non-dict
+        # `ignore` reach here, but filter_ignored guards against it directly
+        # too, in case it's ever called from somewhere else.
+        findings = [self._finding("bandit", "B101")]
+        out = filter_ignored(findings, "bogus")  # must not raise
         self.assertEqual(out, findings)
 
     def test_normalizes_hyphenated_tool_name_to_underscore(self):
