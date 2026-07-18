@@ -35,7 +35,7 @@ Timefrugal-QA/
 │   ├── setup_all_repos.sh  # bulk-adds workflow to all repos via gh CLI + GitHub API
 │   └── setup_new_repo.sh   # adds workflow to a single named repo (usage: bash setup_new_repo.sh owner/repo)
 ├── .pre-commit-hooks.yaml   # pre-commit framework integration
-├── pyproject.toml           # pip-installable: pip install git+https://github.com/Timefrugal/Timefrugal-QA.git@main
+├── pyproject.toml           # pip-installable: pip install git+https://github.com/Timefrugal/Timefrugal-QA.git@v1
 ├── requirements.txt         # openai, bandit, semgrep, pylint, mypy, radon, pip-audit, rich, requests
 └── README.md
 ```
