@@ -1,0 +1,34 @@
+# Per-repo QA configuration for this repo (Timefrugal-QA itself). See
+# qa_agent/repo_config.py for the schema this file is validated against.
+#
+# ignore.pip_audit below waives 4 specific HIGH pip-audit findings that were
+# investigated and confirmed unreachable in how THIS repo actually uses its
+# dependencies. These are deliberate, documented accepted-risk decisions --
+# not a blanket suppression. All 4 come from `mcp` and `click`, which are
+# BOTH transitive dependencies pulled in solely by `semgrep`; every recent
+# semgrep release hard-pins both to these vulnerable ranges, and forcing
+# newer versions via override pins only resolves by downgrading semgrep
+# ~23 months (1.170.0 -> 1.85.0), which itself introduces a NEW CVE
+# (protobuf DoS, CVE-2026-0994) with no further clean fix available -- a
+# worse trade, not a better one. See investigation notes for the full
+# comparison; this waiver was chosen over the downgrade-semgrep approach.
+ignore:
+  pip_audit:
+    # click 8.1.8 -- command injection in click.edit() (PYSEC-2026-2132).
+    # click.edit() is an interactive text-editor-invocation function.
+    # semgrep (the only thing that pulls click into this repo's dependency
+    # tree) is invoked here exclusively as a non-interactive CLI subprocess
+    # (explicit args, no user-facing editor prompts anywhere in this repo's
+    # actual semgrep invocation) -- click.edit()'s code path is never reached.
+    - PYSEC-2026-2132
+
+    # mcp 1.23.3 -- the following 3 CVEs all describe attacks against a
+    # RUNNING MCP SERVER (task/session isolation bypass, session auth
+    # bypass, WebSocket transport missing origin validation). This repo
+    # never runs `mcp` as a server: semgrep pulls it in for an optional
+    # `semgrep mcp` sub-feature that this repo's qa.yml / qa_agent code
+    # never invokes -- semgrep is only ever called as a headless CLI
+    # subprocess for static scanning.
+    - CVE-2026-52870  # mcp task/session isolation bypass
+    - CVE-2026-52869  # mcp session auth bypass
+    - CVE-2026-59950  # mcp WebSocket transport missing origin validation

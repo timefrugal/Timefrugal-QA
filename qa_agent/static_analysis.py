@@ -27,7 +27,7 @@ def detect_language(files: List[str]) -> str:
             counts["java"] += 1
         elif ext in config.HTML_EXTENSIONS:
             counts["html"] += 1
-    return max(counts, key=counts.get) if any(counts.values()) else "python"
+    return max(counts, key=lambda k: counts[k]) if any(counts.values()) else "python"
 
 
 @dataclass

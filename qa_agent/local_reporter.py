@@ -2,6 +2,7 @@
 Local terminal reporter — pretty-prints review results when running outside GitHub Actions.
 """
 from pathlib import Path
+from typing import Optional
 
 from rich.console import Console
 from rich.panel import Panel
@@ -38,7 +39,7 @@ def print_report(
     static_results: AnalysisResults,
     ai_review: AIReview,
     generated_tests: str = "",
-    changed_files: list = None,
+    changed_files: Optional[list] = None,
 ) -> None:
     """Print a rich, colored QA report to the terminal."""
     blocked = static_results.has_blocking_issues or ai_review.has_blocking_issues
@@ -86,15 +87,15 @@ def print_report(
     # AI findings
     if ai_review.findings:
         console.print("\n[bold]🤖 AI Code Review Findings:[/bold]")
-        for f in sorted(ai_review.findings,
+        for af in sorted(ai_review.findings,
                         key=lambda x: config.SEVERITY_ORDER.index(x.severity)):
-            emoji = SEVERITY_EMOJI.get(f.severity, "⚪")
-            style = SEVERITY_STYLE.get(f.severity, "dim")
-            loc = f"{f.file}:{f.line}" if f.line else f.file
-            console.print(f"\n  {emoji} [{style}]{f.severity} / {f.category}[/{style}]  [dim]{loc}[/dim]")
-            console.print(f"    Issue: {f.message}")
-            if f.suggestion:
-                console.print(f"    [green]Fix:[/green] {f.suggestion}")
+            emoji = SEVERITY_EMOJI.get(af.severity, "⚪")
+            style = SEVERITY_STYLE.get(af.severity, "dim")
+            loc = f"{af.file}:{af.line}" if af.line else af.file
+            console.print(f"\n  {emoji} [{style}]{af.severity} / {af.category}[/{style}]  [dim]{loc}[/dim]")
+            console.print(f"    Issue: {af.message}")
+            if af.suggestion:
+                console.print(f"    [green]Fix:[/green] {af.suggestion}")
 
     # Architecture notes
     if ai_review.architecture_notes:
@@ -135,7 +136,7 @@ def save_report(
     static_results: AnalysisResults,
     ai_review: AIReview,
     generated_tests: str = "",
-    output_path: str = None,
+    output_path: Optional[str] = None,
 ) -> str:
     """Save a markdown report to disk. Returns the file path."""
     path = output_path or config.LOCAL_REPORT_FILE
@@ -165,10 +166,10 @@ def save_report(
     # AI findings
     if ai_review.findings:
         lines.append("## AI Review Findings")
-        for f in ai_review.findings:
-            lines.append(f"- **[{f.severity} / {f.category}]** `{f.file}:{f.line}` — {f.message}")
-            if f.suggestion:
-                lines.append(f"  - Fix: {f.suggestion}")
+        for af in ai_review.findings:
+            lines.append(f"- **[{af.severity} / {af.category}]** `{af.file}:{af.line}` — {af.message}")
+            if af.suggestion:
+                lines.append(f"  - Fix: {af.suggestion}")
         lines.append("")
 
     if ai_review.architecture_notes:

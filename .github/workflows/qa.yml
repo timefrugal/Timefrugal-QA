@@ -1,0 +1,94 @@
+# Timefrugal-QA -- AI-powered code review
+# This is Timefrugal-QA's OWN self-gating workflow: this repo runs its own QA agent
+# against its own PRs, based on templates/repo_workflow.yml (the template every
+# other consuming repo gets installed from).
+#
+# NOTE: This workflow is intentionally self-contained (not a reusable workflow call)
+# so it works with both public and private repositories.
+
+name: Timefrugal-QA
+
+on:
+  pull_request:
+    branches: [ main, master, develop ]
+    types: [ opened, synchronize, reopened ]
+
+permissions:
+  contents: read
+  pull-requests: write
+  statuses: write
+  models: read
+
+concurrency:
+  group: timefrugal-qa-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  qa-review:
+    name: AI QA Review
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch base branch
+        run: git fetch origin ${{ github.base_ref }} --depth=50
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-timefrugal-qa
+
+      # DEVIATION FROM templates/repo_workflow.yml: every other repo installs the agent
+      # via `pip install git+https://github.com/timefrugal/Timefrugal-QA.git@v1` (the
+      # last tagged release). This repo IS Timefrugal-QA, so that would self-gate PRs
+      # here against a stale, already-released snapshot instead of the code actually
+      # under review. `v1` is tagged at a commit that predates this session's H1-H3
+      # (repo config system), M1 (diff-scope fix), and M2-M4 work, so gating against it
+      # would test old logic and silently miss regressions in the very changes a PR is
+      # trying to introduce -- defeating the point of self-gating. Install the current
+      # checkout instead so the QA agent always reviews itself with itself.
+      - name: Install Timefrugal-QA agent (editable, from this checkout)
+        run: |
+          pip install --upgrade pip
+          pip install -e .
+
+      - name: Install analysis tools
+        run: pip install bandit semgrep pylint mypy radon pip-audit
+
+      - name: Install project dependencies
+        run: |
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          if [ -f requirements-dev.txt ]; then pip install -r requirements-dev.txt; fi
+          if [ -f pyproject.toml ]; then pip install -e ".[dev]" 2>/dev/null || pip install -e . 2>/dev/null || true; fi
+        continue-on-error: true
+
+      - name: Run Timefrugal-QA
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_SHA: ${{ github.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          python -m qa_agent \
+            --ci \
+            --base origin/${{ github.base_ref }} \
+            --pr ${{ github.event.pull_request.number }}
+
+      - name: Upload QA report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qa-report
+          path: qa_report.md
+          if-no-files-found: ignore
+          retention-days: 30
