@@ -363,7 +363,7 @@ def _format_static_for_ai(results: AnalysisResults) -> str:
     # Show top findings only (cap at 20 to stay within token budget)
     top = sorted(
         results.findings,
-        key=lambda f: ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"].index(f.severity)
+        key=lambda f: config.SEVERITY_ORDER.index(f.severity)
     )[:20]
     for f in top:
         lines.append(f"- [{f.severity}] {f.tool} | {f.file}:{f.line} | {f.message}")

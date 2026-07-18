@@ -225,7 +225,7 @@ def _build_comment(
     # AI review findings
     if ai.findings:
         parts.append("### 🤖 AI Code Review")
-        for f in sorted(ai.findings, key=lambda x: ["CRITICAL","HIGH","MEDIUM","LOW","INFO"].index(x.severity)):
+        for f in sorted(ai.findings, key=lambda x: config.SEVERITY_ORDER.index(x.severity)):
             emoji = SEVERITY_EMOJI.get(f.severity, "⚪")
             loc = f"`{f.file}:{f.line}`" if f.line else f"`{f.file}`"
             parts.append(f"- {emoji} **[{f.severity} / {f.category}]** {loc}")
