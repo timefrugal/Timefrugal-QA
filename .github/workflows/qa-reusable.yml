@@ -76,7 +76,7 @@ jobs:
         run: |
           pip install --upgrade pip
           # Install the QA agent from the central repo
-          pip install git+https://github.com/Timefrugal/Timefrugal-QA.git@main
+          pip install git+https://github.com/Timefrugal/Timefrugal-QA.git@v1
 
       # -- Install open-source analysis tools --------------------------
       - name: Install analysis tools

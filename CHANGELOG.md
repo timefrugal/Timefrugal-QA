@@ -7,6 +7,21 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.2.1] — 2026-07-18
+
+### Fixed
+- **`pip-audit` scope leak** — `run_pip_audit()` no longer falls back to auditing the active Python environment (including Timefrugal-QA's own dependencies) when no manifest input is given; it now only runs when the target repo has a `requirements.txt`/`requirements-dev.txt`, passing each found manifest via `-r`. Previously any consuming repo could get phantom High-severity findings attributed to a hardcoded `requirements.txt` that didn't exist, blocking every PR touching a `.py` file
+- **`setup_all_repos.sh` false failures** — when the PAT can't read a private repo (GET check fails), the script now inspects the PUT error body: a 422 response containing `"sha"` means the file already exists, so it reports skipped instead of failed
+
+### Added
+- `scripts/setup_new_repo.sh` — adds the Timefrugal-QA workflow to a single newly-created repo (companion to the bulk `setup_all_repos.sh`)
+- `.github/workflows/auto-setup.yml` — daily scheduled workflow that runs `setup_all_repos.sh` to add the QA workflow to any repo missing it
+
+### Changed
+- Consumer install instructions now pin to the moving `@v1` tag instead of `@main` (`templates/repo_workflow.yml`, `.github/workflows/qa-reusable.yml`, `scripts/run_local_qa.sh`), so a commit to `main` no longer changes gating behavior fleet-wide without a manual re-tag
+
+---
+
 ## [1.2.0] — 2026-06-13
 
 ### Added
@@ -56,6 +71,7 @@ Versions follow [Semantic Versioning](https://semver.org/).
 - Daily auto-setup workflow (`auto-setup.yml`) — adds QA workflow to any repo missing it
 - Windows UTF-8 fix for PowerShell terminals
 
+[1.2.1]: https://github.com/timefrugal/Timefrugal-QA/releases/tag/v1.2.1
 [1.2.0]: https://github.com/timefrugal/Timefrugal-QA/releases/tag/v1.2.0
 [1.1.0]: https://github.com/timefrugal/Timefrugal-QA/releases/tag/v1.1.0
 [1.0.0]: https://github.com/timefrugal/Timefrugal-QA/releases/tag/v1.0.0
