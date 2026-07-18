@@ -200,7 +200,7 @@ def run(
             changed_files=changed,
         )
 
-    return 2 if errored else (1 if blocked else 0)
+    return 1 if blocked else (2 if errored else 0)
 
 
 def _report_ci(pr_number, static_results, ai_review, generated_tests, blocked, errored):
