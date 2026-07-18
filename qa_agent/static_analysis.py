@@ -323,11 +323,22 @@ def run_radon(files: List[str]) -> AnalysisResults:
     return results
 
 
+# pyproject.toml intentionally not audited here -- pip-audit's --path/project-path modes
+# trigger a full build/dependency resolution of the target repo, which is slow and risks
+# executing untrusted build-backend code in a shared CI tool.
+_PIP_AUDIT_MANIFESTS = ["requirements.txt", "requirements-dev.txt"]
+
 def run_pip_audit(project_root: str = ".") -> AnalysisResults:
-    """Audit Python dependencies for known vulnerabilities."""
+    """Audit the target project's own declared Python dependencies for known vulnerabilities."""
     results = AnalysisResults()
 
+    manifests = [m for m in _PIP_AUDIT_MANIFESTS if (Path(project_root) / m).is_file()]
+    if not manifests:
+        return results  # no manifest -> silent no-op, same pattern as run_pmd/run_htmlhint on empty input
+
     cmd = [config.PIP_AUDIT_CMD, "--format=json", "--progress-spinner=off"]
+    for m in manifests:
+        cmd += ["-r", m]
     rc, stdout, stderr = _run(cmd, cwd=project_root)
 
     if rc == -1:
@@ -340,6 +351,7 @@ def run_pip_audit(project_root: str = ".") -> AnalysisResults:
         results.errors.append("pip-audit: could not parse output")
         return results
 
+    manifest_label = ", ".join(manifests)
     for dep in data.get("dependencies", []):
         for vuln in dep.get("vulns", []):
             severity_str = vuln.get("fix_versions") and config.SEVERITY_HIGH or config.SEVERITY_MEDIUM
@@ -347,7 +359,7 @@ def run_pip_audit(project_root: str = ".") -> AnalysisResults:
                 tool="pip-audit",
                 severity=severity_str,
                 category="dependency",
-                file="requirements.txt",
+                file=manifest_label,
                 line=0,
                 message=(
                     f"Package '{dep.get('name')}=={dep.get('version')}': "
