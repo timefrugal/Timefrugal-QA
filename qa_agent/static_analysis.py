@@ -134,14 +134,14 @@ def _pylint_severity(msg_type: str, overrides: Optional[Dict] = None) -> str:
 # Individual tool runners
 # ──────────────────────────────────────────────
 
-def run_bandit(files: List[str]) -> AnalysisResults:
+def run_bandit(files: List[str], project_root: str = ".") -> AnalysisResults:
     """Run bandit security linter on given Python files."""
     results = AnalysisResults()
     if not files:
         return results
 
     cmd = [config.BANDIT_CMD, "-f", "json", "-q"] + files
-    rc, stdout, stderr = _run(cmd)
+    rc, stdout, stderr = _run(cmd, cwd=project_root)
 
     if rc == -1:
         results.errors.append(f"bandit: {stderr}")
@@ -168,7 +168,7 @@ def run_bandit(files: List[str]) -> AnalysisResults:
     return results
 
 
-def run_semgrep(files: List[str]) -> AnalysisResults:
+def run_semgrep(files: List[str], project_root: str = ".") -> AnalysisResults:
     """Run semgrep with the free community ruleset."""
     results = AnalysisResults()
     if not files:
@@ -183,7 +183,7 @@ def run_semgrep(files: List[str]) -> AnalysisResults:
     if _SEMGREP_RULES_DIR.is_dir():
         cmd += ["--config", str(_SEMGREP_RULES_DIR)]
     cmd += files
-    rc, stdout, stderr = _run(cmd)
+    rc, stdout, stderr = _run(cmd, cwd=project_root)
 
     if rc == -1:
         results.errors.append(f"semgrep: {stderr}")
@@ -211,7 +211,7 @@ def run_semgrep(files: List[str]) -> AnalysisResults:
     return results
 
 
-def run_pylint(files: List[str], repo_config: Optional[RepoConfig] = None) -> AnalysisResults:
+def run_pylint(files: List[str], repo_config: Optional[RepoConfig] = None, project_root: str = ".") -> AnalysisResults:
     """Run pylint for code quality and bug detection."""
     results = AnalysisResults()
     if not files:
@@ -226,7 +226,7 @@ def run_pylint(files: List[str], repo_config: Optional[RepoConfig] = None) -> An
         "--output-format=json",
         "--disable=C0114,C0115,C0116",   # suppress missing-docstring for speed
     ] + files
-    rc, stdout, stderr = _run(cmd)
+    rc, stdout, stderr = _run(cmd, cwd=project_root)
 
     if rc == -1:
         results.errors.append(f"pylint: {stderr}")
@@ -253,7 +253,7 @@ def run_pylint(files: List[str], repo_config: Optional[RepoConfig] = None) -> An
     return results
 
 
-def run_mypy(files: List[str], repo_config: Optional[RepoConfig] = None) -> AnalysisResults:
+def run_mypy(files: List[str], repo_config: Optional[RepoConfig] = None, project_root: str = ".") -> AnalysisResults:
     """Run mypy for type checking."""
     results = AnalysisResults()
     if not files:
@@ -264,7 +264,7 @@ def run_mypy(files: List[str], repo_config: Optional[RepoConfig] = None) -> Anal
     )
 
     cmd = [config.MYPY_CMD, "--no-error-summary", "--show-column-numbers"] + files
-    rc, stdout, stderr = _run(cmd)
+    rc, stdout, stderr = _run(cmd, cwd=project_root)
 
     if rc == -1:
         results.errors.append(f"mypy: {stderr}")
@@ -300,14 +300,14 @@ def run_mypy(files: List[str], repo_config: Optional[RepoConfig] = None) -> Anal
     return results
 
 
-def run_radon(files: List[str]) -> AnalysisResults:
+def run_radon(files: List[str], project_root: str = ".") -> AnalysisResults:
     """Flag functions with high cyclomatic complexity."""
     results = AnalysisResults()
     if not files:
         return results
 
     cmd = [config.RADON_CMD, "cc", "-j", "-s"] + files
-    rc, stdout, stderr = _run(cmd)
+    rc, stdout, stderr = _run(cmd, cwd=project_root)
 
     if rc == -1:
         results.errors.append(f"radon: {stderr}")
@@ -388,7 +388,7 @@ def run_pip_audit(project_root: str = ".") -> AnalysisResults:
     return results
 
 
-def run_pmd(files: List[str]) -> AnalysisResults:
+def run_pmd(files: List[str], project_root: str = ".") -> AnalysisResults:
     """Run PMD 7+ for Java static analysis (graceful degradation if not installed)."""
     results = AnalysisResults()
     if not files:
@@ -401,7 +401,7 @@ def run_pmd(files: List[str]) -> AnalysisResults:
         "-f", "json",
         "--no-progress-bar",
     ]
-    rc, stdout, stderr = _run(cmd)
+    rc, stdout, stderr = _run(cmd, cwd=project_root)
 
     if rc == -1:
         results.errors.append(f"pmd: {stderr}")
@@ -429,14 +429,14 @@ def run_pmd(files: List[str]) -> AnalysisResults:
     return results
 
 
-def run_htmlhint(files: List[str]) -> AnalysisResults:
+def run_htmlhint(files: List[str], project_root: str = ".") -> AnalysisResults:
     """Run htmlhint for HTML linting (graceful degradation if not installed)."""
     results = AnalysisResults()
     if not files:
         return results
 
     cmd = [config.HTMLHINT_CMD, "--format", "json"] + files
-    rc, stdout, stderr = _run(cmd)
+    rc, stdout, stderr = _run(cmd, cwd=project_root)
 
     if rc == -1:
         results.errors.append(f"htmlhint: {stderr}")
@@ -489,7 +489,7 @@ def run_all(
     """
     combined = AnalysisResults()
 
-    existing = [f for f in files if Path(f).exists()]
+    existing = [f for f in files if (Path(project_root) / f).exists()]
     py_files   = [f for f in existing if Path(f).suffix.lower() in config.PYTHON_EXTENSIONS]
     java_files = [f for f in existing if Path(f).suffix.lower() in config.JAVA_EXTENSIONS]
     html_files = [f for f in existing if Path(f).suffix.lower() in config.HTML_EXTENSIONS]
@@ -497,17 +497,17 @@ def run_all(
 
     runners: dict = {}
     if all_supported:
-        runners["semgrep"] = lambda: run_semgrep(all_supported)
+        runners["semgrep"] = lambda: run_semgrep(all_supported, project_root=project_root)
     if py_files:
-        runners["bandit"]    = lambda: run_bandit(py_files)
-        runners["pylint"]    = lambda: run_pylint(py_files, repo_config=repo_config)
-        runners["mypy"]      = lambda: run_mypy(py_files, repo_config=repo_config)
-        runners["radon"]     = lambda: run_radon(py_files)
+        runners["bandit"]    = lambda: run_bandit(py_files, project_root=project_root)
+        runners["pylint"]    = lambda: run_pylint(py_files, repo_config=repo_config, project_root=project_root)
+        runners["mypy"]      = lambda: run_mypy(py_files, repo_config=repo_config, project_root=project_root)
+        runners["radon"]     = lambda: run_radon(py_files, project_root=project_root)
         runners["pip-audit"] = lambda: run_pip_audit(project_root)
     if java_files:
-        runners["pmd"] = lambda: run_pmd(java_files)
+        runners["pmd"] = lambda: run_pmd(java_files, project_root=project_root)
     if html_files:
-        runners["htmlhint"] = lambda: run_htmlhint(html_files)
+        runners["htmlhint"] = lambda: run_htmlhint(html_files, project_root=project_root)
 
     if not runners:
         return combined
