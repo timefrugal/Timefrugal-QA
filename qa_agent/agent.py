@@ -19,17 +19,24 @@ from qa_agent.repo_config import load_repo_config
 # Git utilities
 # ──────────────────────────────────────────────
 
-def get_changed_files(base_ref: str = "origin/main") -> List[str]:
-    """Return list of changed Python, Java, and HTML files compared to base_ref."""
+def get_changed_files(base_ref: str = "origin/main", project_root: str = ".") -> List[str]:
+    """Return list of changed Python, Java, and HTML files compared to base_ref.
+
+    Uses three-dot diff semantics (base_ref...HEAD), i.e. diffs HEAD against
+    the merge-base of base_ref and HEAD, not against base_ref's current tip.
+    This matters on a stale local branch: two-dot diff (base_ref HEAD as
+    separate args) would also report files that only changed on base_ref
+    since the branch diverged, which is not "changed files in this PR".
+    """
     try:
         result = subprocess.run(
-            ["git", "diff", "--name-only", "--diff-filter=ACMR", base_ref, "HEAD"],
-            capture_output=True, text=True, check=True,
+            ["git", "diff", "--name-only", "--diff-filter=ACMR", f"{base_ref}...HEAD"],
+            capture_output=True, text=True, check=True, cwd=project_root,
         )
         files = [
             f.strip() for f in result.stdout.splitlines()
             if Path(f.strip()).suffix.lower() in config.SUPPORTED_EXTENSIONS
-            and Path(f.strip()).exists()
+            and (Path(project_root) / f.strip()).exists()
             and not any(excl in f for excl in config.EXCLUDE_PATTERNS)
         ]
         return files
@@ -38,12 +45,13 @@ def get_changed_files(base_ref: str = "origin/main") -> List[str]:
         return []
 
 
-def read_file_contents(files: List[str]) -> dict[str, str]:
-    """Read contents of a list of files. Skip unreadable ones."""
+def read_file_contents(files: List[str], project_root: str = ".") -> dict[str, str]:
+    """Read contents of a list of files, resolved relative to project_root.
+    Skip unreadable ones."""
     contents = {}
     for f in files:
         try:
-            contents[f] = Path(f).read_text(encoding="utf-8", errors="replace")
+            contents[f] = (Path(project_root) / f).read_text(encoding="utf-8", errors="replace")
         except Exception as e:
             print(f"[agent] Could not read {f}: {e}", file=sys.stderr)
     return contents
@@ -132,7 +140,7 @@ def run(
 
     # ── 1. Discover changed files ──────────────────────────────────────
     print("[agent] Discovering changed files...")
-    changed = get_changed_files(base_ref)
+    changed = get_changed_files(base_ref, project_root=project_root)
 
     if not changed:
         print("[agent] No supported files changed (Python, Java, HTML). Nothing to review.")
@@ -144,7 +152,7 @@ def run(
     print(f"[agent] Language detected: {language} | Files to review: {', '.join(changed)}")
 
     # ── 2. Read file contents ──────────────────────────────────────────
-    file_contents = read_file_contents(changed)
+    file_contents = read_file_contents(changed, project_root=project_root)
     existing_tests = find_existing_tests(changed) if language == "python" else {}
 
     # ── 3. Static analysis ────────────────────────────────────────────
