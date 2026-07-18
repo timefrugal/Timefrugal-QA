@@ -1,0 +1,156 @@
+"""
+Tests for qa_agent.repo_config.
+
+Uses stdlib unittest (no pytest / test framework is set up in this repo yet).
+"""
+import os
+import tempfile
+import unittest
+
+from qa_agent.repo_config import RepoConfig, filter_ignored, load_repo_config
+from qa_agent.static_analysis import Finding
+
+
+class TestLoadRepoConfigMissingFile(unittest.TestCase):
+    def test_missing_file_returns_defaults(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # No .timefrugal-qa.yml written here at all.
+            cfg = load_repo_config(tmpdir)
+        self.assertEqual(cfg, RepoConfig())
+        self.assertFalse(cfg.ai_blocking)
+        self.assertIsNone(cfg.block_merge_threshold)
+        self.assertEqual(cfg.severity_overrides, {})
+        self.assertEqual(cfg.ignore, {})
+
+
+class TestLoadRepoConfigMalformedYaml(unittest.TestCase):
+    def test_malformed_yaml_returns_defaults_without_raising(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, ".timefrugal-qa.yml")
+            with open(path, "w") as f:
+                # Invalid YAML: unbalanced flow mapping.
+                f.write("ai: {blocking: true\n  garbage: [1, 2\n")
+            cfg = load_repo_config(tmpdir)  # must not raise
+        self.assertEqual(cfg, RepoConfig())
+
+    def test_empty_file_returns_defaults(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, ".timefrugal-qa.yml")
+            with open(path, "w") as f:
+                f.write("")
+            cfg = load_repo_config(tmpdir)
+        self.assertEqual(cfg, RepoConfig())
+
+    def test_yaml_that_parses_to_non_dict_returns_defaults(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, ".timefrugal-qa.yml")
+            with open(path, "w") as f:
+                f.write("- just\n- a\n- list\n")
+            cfg = load_repo_config(tmpdir)
+        self.assertEqual(cfg, RepoConfig())
+
+
+class TestLoadRepoConfigFullyPopulated(unittest.TestCase):
+    def test_fully_populated_yaml_parses_every_field(self):
+        yaml_text = """
+ai:
+  blocking: true
+block_merge_threshold: CRITICAL
+severity_overrides:
+  pylint:
+    E: MEDIUM
+  mypy:
+    error: MEDIUM
+ignore:
+  bandit:
+    - B101
+    - B105
+  pip_audit:
+    - GHSA-xxxx-yyyy-zzzz
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, ".timefrugal-qa.yml")
+            with open(path, "w") as f:
+                f.write(yaml_text)
+            cfg = load_repo_config(tmpdir)
+
+        self.assertTrue(cfg.ai_blocking)
+        self.assertEqual(cfg.block_merge_threshold, "CRITICAL")
+        self.assertEqual(cfg.severity_overrides, {
+            "pylint": {"E": "MEDIUM"},
+            "mypy": {"error": "MEDIUM"},
+        })
+        self.assertEqual(cfg.ignore, {
+            "bandit": ["B101", "B105"],
+            "pip_audit": ["GHSA-xxxx-yyyy-zzzz"],
+        })
+
+    def test_partial_yaml_fills_remaining_fields_with_defaults(self):
+        yaml_text = "ai:\n  blocking: true\n"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, ".timefrugal-qa.yml")
+            with open(path, "w") as f:
+                f.write(yaml_text)
+            cfg = load_repo_config(tmpdir)
+
+        self.assertTrue(cfg.ai_blocking)
+        self.assertIsNone(cfg.block_merge_threshold)
+        self.assertEqual(cfg.severity_overrides, {})
+        self.assertEqual(cfg.ignore, {})
+
+
+class TestFilterIgnored(unittest.TestCase):
+    def _finding(self, tool, rule_id, severity="HIGH", category="security"):
+        return Finding(
+            tool=tool,
+            severity=severity,
+            category=category,
+            file="app.py",
+            line=1,
+            message="msg",
+            rule_id=rule_id,
+        )
+
+    def test_removes_matching_tool_and_rule_id(self):
+        findings = [
+            self._finding("bandit", "B101"),
+            self._finding("bandit", "B105"),
+            self._finding("bandit", "B608"),
+        ]
+        ignore_map = {"bandit": ["B101", "B105"]}
+        out = filter_ignored(findings, ignore_map)
+        self.assertEqual([f.rule_id for f in out], ["B608"])
+
+    def test_leaves_non_matching_findings_untouched(self):
+        findings = [
+            self._finding("bandit", "B101"),
+            self._finding("pylint", "E0001"),
+        ]
+        ignore_map = {"semgrep": ["some-rule"]}
+        out = filter_ignored(findings, ignore_map)
+        self.assertEqual(out, findings)
+
+    def test_empty_ignore_map_returns_findings_unchanged(self):
+        findings = [self._finding("bandit", "B101")]
+        out = filter_ignored(findings, {})
+        self.assertEqual(out, findings)
+
+    def test_normalizes_hyphenated_tool_name_to_underscore(self):
+        findings = [
+            self._finding("pip-audit", "GHSA-xxxx-yyyy-zzzz", category="dependency"),
+        ]
+        ignore_map = {"pip_audit": ["GHSA-xxxx-yyyy-zzzz"]}
+        out = filter_ignored(findings, ignore_map)
+        self.assertEqual(out, [])
+
+    def test_only_matches_same_tool_not_just_rule_id(self):
+        findings = [
+            self._finding("pylint", "B101"),  # same rule_id, different tool
+        ]
+        ignore_map = {"bandit": ["B101"]}
+        out = filter_ignored(findings, ignore_map)
+        self.assertEqual(out, findings)
+
+
+if __name__ == "__main__":
+    unittest.main()

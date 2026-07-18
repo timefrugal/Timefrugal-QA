@@ -39,8 +39,10 @@ SEVERITY_MEDIUM = "MEDIUM"
 SEVERITY_LOW = "LOW"
 SEVERITY_INFO = "INFO"
 
-# PRs are blocked (merge prevented) if any finding at or above this level exists
-BLOCK_MERGE_THRESHOLD = SEVERITY_HIGH
+# PRs are blocked (merge prevented) if any finding at or above this level exists.
+# A per-repo `.timefrugal-qa.yml` (`block_merge_threshold:`) takes precedence
+# over this env var when both are present -- see qa_agent.repo_config.
+BLOCK_MERGE_THRESHOLD = os.environ.get("QA_BLOCK_MERGE_THRESHOLD", SEVERITY_HIGH)
 
 # ──────────────────────────────────────────────
 # Static analysis tool paths (auto-detected from PATH)

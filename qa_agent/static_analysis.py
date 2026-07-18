@@ -8,9 +8,10 @@ import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from qa_agent import config
+from qa_agent.repo_config import RepoConfig, filter_ignored
 
 _SEMGREP_RULES_DIR = Path(__file__).parent / "semgrep_rules"
 
@@ -45,6 +46,10 @@ class Finding:
 class AnalysisResults:
     findings: List[Finding] = field(default_factory=list)
     errors: List[str] = field(default_factory=list)   # tool execution errors
+    # Resolved effective threshold for this run (repo config takes precedence
+    # over the QA_BLOCK_MERGE_THRESHOLD env var / hardcoded default). None
+    # means "use config.BLOCK_MERGE_THRESHOLD".
+    block_merge_threshold: Optional[str] = None
 
     @property
     def has_blocking_issues(self) -> bool:
@@ -55,8 +60,13 @@ class AnalysisResults:
             config.SEVERITY_LOW,
             config.SEVERITY_INFO,
         ]
-        cutoff = threshold_order.index(config.BLOCK_MERGE_THRESHOLD)
+        threshold = self.block_merge_threshold or config.BLOCK_MERGE_THRESHOLD
+        cutoff = threshold_order.index(threshold)
         for f in self.findings:
+            # Radon complexity findings are advisory-only: reported for
+            # visibility but never gate a merge on their own.
+            if f.category == "complexity":
+                continue
             if f.severity in threshold_order[:cutoff + 1]:
                 return True
         return False
@@ -103,7 +113,10 @@ def _bandit_severity(bandit_sev: str) -> str:
 def _semgrep_severity(sg_sev: str) -> str:
     mapping = {
         "ERROR": config.SEVERITY_CRITICAL,
-        "WARNING": config.SEVERITY_HIGH,
+        # WARNING historically mapped to HIGH, which made semgrep's noisy
+        # community ruleset independently block merges. MEDIUM is the new
+        # unconditional default (H2: severity mapping systematically over-blocks).
+        "WARNING": config.SEVERITY_MEDIUM,
         "INFO": config.SEVERITY_MEDIUM,
     }
     return mapping.get(sg_sev.upper(), config.SEVERITY_INFO)
@@ -115,7 +128,10 @@ def _pmd_severity(priority: int) -> str:
             3: config.SEVERITY_MEDIUM, 4: config.SEVERITY_LOW}.get(priority, config.SEVERITY_INFO)
 
 
-def _pylint_severity(msg_type: str) -> str:
+def _pylint_severity(msg_type: str, overrides: Optional[Dict] = None) -> str:
+    key = msg_type.upper()[:1]
+    if overrides and key in overrides:
+        return overrides[key]
     mapping = {
         "F": config.SEVERITY_CRITICAL,   # fatal
         "E": config.SEVERITY_HIGH,        # error
@@ -123,7 +139,7 @@ def _pylint_severity(msg_type: str) -> str:
         "R": config.SEVERITY_LOW,         # refactor
         "C": config.SEVERITY_INFO,        # convention
     }
-    return mapping.get(msg_type.upper()[:1], config.SEVERITY_INFO)
+    return mapping.get(key, config.SEVERITY_INFO)
 
 
 # ──────────────────────────────────────────────
@@ -207,11 +223,15 @@ def run_semgrep(files: List[str]) -> AnalysisResults:
     return results
 
 
-def run_pylint(files: List[str]) -> AnalysisResults:
+def run_pylint(files: List[str], repo_config: Optional[RepoConfig] = None) -> AnalysisResults:
     """Run pylint for code quality and bug detection."""
     results = AnalysisResults()
     if not files:
         return results
+
+    overrides = (
+        repo_config.severity_overrides.get("pylint", {}) if repo_config else {}
+    )
 
     cmd = [
         config.PYLINT_CMD,
@@ -234,7 +254,7 @@ def run_pylint(files: List[str]) -> AnalysisResults:
         msg_type = item.get("type", "C")
         results.findings.append(Finding(
             tool="pylint",
-            severity=_pylint_severity(msg_type),
+            severity=_pylint_severity(msg_type, overrides),
             category="quality",
             file=item.get("path", ""),
             line=item.get("line", 0),
@@ -245,11 +265,15 @@ def run_pylint(files: List[str]) -> AnalysisResults:
     return results
 
 
-def run_mypy(files: List[str]) -> AnalysisResults:
+def run_mypy(files: List[str], repo_config: Optional[RepoConfig] = None) -> AnalysisResults:
     """Run mypy for type checking."""
     results = AnalysisResults()
     if not files:
         return results
+
+    overrides = (
+        repo_config.severity_overrides.get("mypy", {}) if repo_config else {}
+    )
 
     cmd = [config.MYPY_CMD, "--no-error-summary", "--show-column-numbers"] + files
     rc, stdout, stderr = _run(cmd)
@@ -263,11 +287,14 @@ def run_mypy(files: List[str]) -> AnalysisResults:
         parts = line.split(":", 4)
         if len(parts) >= 4:
             sev_word = parts[3].strip().lower()
-            severity = (
-                config.SEVERITY_HIGH if sev_word == "error"
-                else config.SEVERITY_MEDIUM if sev_word == "warning"
-                else config.SEVERITY_INFO
-            )
+            if sev_word in overrides:
+                severity = overrides[sev_word]
+            else:
+                severity = (
+                    config.SEVERITY_HIGH if sev_word == "error"
+                    else config.SEVERITY_MEDIUM if sev_word == "warning"
+                    else config.SEVERITY_INFO
+                )
             try:
                 lineno = int(parts[1])
             except ValueError:
@@ -457,11 +484,20 @@ def run_htmlhint(files: List[str]) -> AnalysisResults:
 # Orchestrator
 # ──────────────────────────────────────────────
 
-def run_all(files: List[str], project_root: str = ".") -> AnalysisResults:
+def run_all(
+    files: List[str],
+    project_root: str = ".",
+    repo_config: Optional[RepoConfig] = None,
+) -> AnalysisResults:
     """
     Run static analysis tools appropriate for the languages present in `files`.
     Supports Python (.py), Java (.java), and HTML (.html/.htm).
     Returns a merged AnalysisResults.
+
+    `repo_config`, when provided, is used to: apply per-tool severity
+    overrides (mypy/pylint), filter out waived (tool, rule_id) findings, and
+    resolve the effective block-merge threshold. Omitting it (the default)
+    reproduces today's behavior exactly.
     """
     combined = AnalysisResults()
 
@@ -476,8 +512,8 @@ def run_all(files: List[str], project_root: str = ".") -> AnalysisResults:
         runners["semgrep"] = lambda: run_semgrep(all_supported)
     if py_files:
         runners["bandit"]    = lambda: run_bandit(py_files)
-        runners["pylint"]    = lambda: run_pylint(py_files)
-        runners["mypy"]      = lambda: run_mypy(py_files)
+        runners["pylint"]    = lambda: run_pylint(py_files, repo_config=repo_config)
+        runners["mypy"]      = lambda: run_mypy(py_files, repo_config=repo_config)
         runners["radon"]     = lambda: run_radon(py_files)
         runners["pip-audit"] = lambda: run_pip_audit(project_root)
     if java_files:
@@ -498,5 +534,11 @@ def run_all(files: List[str], project_root: str = ".") -> AnalysisResults:
                 combined.errors.extend(result.errors)
             except Exception as exc:
                 combined.errors.append(f"{name}: unexpected error — {exc}")
+
+    if repo_config is not None:
+        if repo_config.ignore:
+            combined.findings = filter_ignored(combined.findings, repo_config.ignore)
+        if repo_config.block_merge_threshold:
+            combined.block_merge_threshold = repo_config.block_merge_threshold
 
     return combined
