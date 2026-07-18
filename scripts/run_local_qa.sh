@@ -58,7 +58,7 @@ fi
 # ── Install QA agent if not present ─────────────────────────────────────────
 if ! python -m qa_agent --help &>/dev/null 2>&1; then
   echo "📦 Installing Timefrugal-QA agent..."
-  pip install git+https://github.com/Timefrugal/Timefrugal-QA.git@main --quiet
+  pip install git+https://github.com/Timefrugal/Timefrugal-QA.git@v1 --quiet
   pip install bandit semgrep pylint mypy radon pip-audit --quiet
 fi
 

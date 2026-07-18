@@ -50,7 +50,7 @@ jobs:
       - name: Install Timefrugal-QA agent
         run: |
           pip install --upgrade pip
-          pip install git+https://github.com/timefrugal/Timefrugal-QA.git@main
+          pip install git+https://github.com/timefrugal/Timefrugal-QA.git@v1
 
       - name: Install analysis tools
         run: pip install bandit semgrep pylint mypy radon pip-audit
