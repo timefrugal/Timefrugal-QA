@@ -25,16 +25,16 @@ Timefrugal/Timefrugal-QA         ← this repo (central)
 ├── qa_agent/                     ← Python agent package
 │   └── semgrep_rules/            ← bundled custom semgrep rules
 ├── .github/workflows/
-│   └── qa-reusable.yml           ← reusable workflow (called by other repos)
+│   └── auto-setup.yml            ← daily: adds the QA workflow to any repo missing it
 ├── .pre-commit-hooks.yaml        ← pre-commit framework integration
 ├── templates/
-│   └── repo_workflow.yml         ← template to copy into each repo
+│   └── repo_workflow.yml         ← self-contained workflow copied into each repo
 └── scripts/
     ├── run_local_qa.sh           ← local pre-PR runner
     └── setup_all_repos.sh        ← adds workflow to all your repos at once
 ```
 
-Each target repo has a tiny `.github/workflows/qa.yml` that calls the central reusable workflow. All QA logic lives in one place — improvements automatically apply to every repo.
+Each target repo gets its own `.github/workflows/qa.yml`, installed from `templates/repo_workflow.yml` at setup time. The Python QA logic (`qa_agent`) lives in this one repo and consumers pull it via `pip install git+...@v1`, so agent-code improvements reach every repo on their next run. The workflow YAML itself is a one-time copy, though — it is **not** auto-refreshed later; picking up workflow-level changes requires re-running `setup_all_repos.sh`/`setup_new_repo.sh` against already-installed repos.
 
 ---
 
@@ -246,7 +246,7 @@ Re-run until QA passes (exit 0)
     ↓
 Raise PR on GitHub
     ↓
-GitHub Actions runs qa-reusable.yml (final gate)
+GitHub Actions runs the installed qa.yml workflow (final gate)
     ↓
 Merge ✅
 ```

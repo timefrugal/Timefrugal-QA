@@ -7,6 +7,20 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [Unreleased]
+
+### Removed
+- The unused `workflow_call`-triggered workflow under `.github/workflows/` — dead code: confirmed no `uses:` reference anywhere in this repo (every consumer installs the self-contained `templates/repo_workflow.yml` copy instead), and it was missing `models: read` permission, so AI calls would have 403'd had it ever been invoked. Reviving a true cross-repo reusable-workflow-call pattern is a deliberate future architecture decision, not done here.
+
+### Fixed
+- **Doc/reality mismatch** — `CLAUDE.md`'s "Architecture decisions" section claimed target repos have "a tiny 15-line caller workflow" and that "all agent improvements auto-apply to every repo." Corrected to describe what actually ships: `qa_agent`'s Python logic auto-updates for consumers via the `@v1` pip install pin, but the workflow YAML (`templates/repo_workflow.yml`) is a one-time install-time copy that `auto-setup.yml`'s skip-if-exists check does not refresh later. `README.md` updated to match.
+- **Local/CI parity visibility** — `local_reporter.print_report()` now prints an explicit warning when one or more analysis tools failed to run locally, pointing at the Tool Warnings block above it, so a local PASS with tool failures isn't mistaken for a guaranteed CI PASS (CI treats the same tool failures as a distinct `errored` state that fails the check).
+
+### Added
+- 5 regression tests: pip-audit command scoping to the target project, AI review severity validation/fallback, commit-status `blocked`-over-`errored` precedence, agent exit-code precedence, and `run_all`'s error-isolation-without-dropping-findings behavior.
+
+---
+
 ## [1.2.1] — 2026-07-18
 
 ### Fixed
@@ -18,7 +32,7 @@ Versions follow [Semantic Versioning](https://semver.org/).
 - `.github/workflows/auto-setup.yml` — daily scheduled workflow that runs `setup_all_repos.sh` to add the QA workflow to any repo missing it
 
 ### Changed
-- Consumer install instructions now pin to the moving `@v1` tag instead of `@main` (`templates/repo_workflow.yml`, `.github/workflows/qa-reusable.yml`, `scripts/run_local_qa.sh`), so a commit to `main` no longer changes gating behavior fleet-wide without a manual re-tag
+- Consumer install instructions now pin to the moving `@v1` tag instead of `@main` (`templates/repo_workflow.yml`, `scripts/run_local_qa.sh`; the unused reusable-workflow file also carried this pin before its removal — see Unreleased), so a commit to `main` no longer changes gating behavior fleet-wide without a manual re-tag
 
 ---
 
@@ -60,7 +74,7 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 - Initial release — AI-powered QA agent for Python repositories
-- GitHub Actions reusable workflow (`qa-reusable.yml`) and caller template (`templates/repo_workflow.yml`)
+- GitHub Actions reusable workflow (`workflow_call` trigger; never actually invoked by any consumer and removed 2026-07-18 as dead code — see Unreleased) and caller template (`templates/repo_workflow.yml`)
 - `qa_agent` Python package: `agent.py`, `static_analysis.py`, `ai_review.py`, `pr_reporter.py`, `local_reporter.py`, `config.py`
 - Static analysis via bandit, semgrep, pylint, mypy, radon, pip-audit
 - AI code review and pytest test generation via GitHub Models (`gpt-4o-mini`) — free with any GitHub account

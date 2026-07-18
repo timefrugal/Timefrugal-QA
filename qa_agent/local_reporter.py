@@ -124,6 +124,12 @@ def print_report(
         if blocked else "[bold green]✅ All checks passed — safe to raise a PR[/bold green]"
     console.print(f"\n{verdict}\n")
 
+    if all_errors:
+        console.print(
+            f"[bold yellow]⚠ {len(all_errors)} analysis tool(s) failed to run locally "
+            f"— this result may not reflect what CI finds. See Tool Warnings above.[/bold yellow]\n"
+        )
+
 
 def save_report(
     static_results: AnalysisResults,
