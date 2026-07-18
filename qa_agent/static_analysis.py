@@ -53,13 +53,7 @@ class AnalysisResults:
 
     @property
     def has_blocking_issues(self) -> bool:
-        threshold_order = [
-            config.SEVERITY_CRITICAL,
-            config.SEVERITY_HIGH,
-            config.SEVERITY_MEDIUM,
-            config.SEVERITY_LOW,
-            config.SEVERITY_INFO,
-        ]
+        threshold_order = config.SEVERITY_ORDER
         threshold = self.block_merge_threshold or config.BLOCK_MERGE_THRESHOLD
         cutoff = threshold_order.index(threshold)
         for f in self.findings:
@@ -76,13 +70,7 @@ class AnalysisResults:
 
     def summary(self) -> dict:
         counts = {}
-        for sev in [
-            config.SEVERITY_CRITICAL,
-            config.SEVERITY_HIGH,
-            config.SEVERITY_MEDIUM,
-            config.SEVERITY_LOW,
-            config.SEVERITY_INFO,
-        ]:
+        for sev in config.SEVERITY_ORDER:
             counts[sev] = len(self.by_severity(sev))
         return counts
 

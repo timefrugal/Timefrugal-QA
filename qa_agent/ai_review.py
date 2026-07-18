@@ -20,13 +20,7 @@ from qa_agent.static_analysis import AnalysisResults
 # else (hallucinated string, wrong case, missing field) is treated as the
 # lowest, non-blocking severity rather than trusted outright (H1: AI findings
 # shouldn't independently block with unvalidated severity).
-_VALID_SEVERITIES = {
-    config.SEVERITY_CRITICAL,
-    config.SEVERITY_HIGH,
-    config.SEVERITY_MEDIUM,
-    config.SEVERITY_LOW,
-    config.SEVERITY_INFO,
-}
+_VALID_SEVERITIES = set(config.SEVERITY_ORDER)
 
 
 def _validate_severity(raw) -> str:

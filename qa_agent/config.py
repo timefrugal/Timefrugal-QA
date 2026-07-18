@@ -39,6 +39,13 @@ SEVERITY_MEDIUM = "MEDIUM"
 SEVERITY_LOW = "LOW"
 SEVERITY_INFO = "INFO"
 
+# Ordered most-to-least severe. This is the single source of truth for
+# severity ordering/validation -- anything that needs "all known severities"
+# or "which is more severe" (threshold cutoffs, sort order, YAML config
+# validation) should derive from this list rather than hardcoding its own
+# copy of the five strings.
+SEVERITY_ORDER = [SEVERITY_CRITICAL, SEVERITY_HIGH, SEVERITY_MEDIUM, SEVERITY_LOW, SEVERITY_INFO]
+
 # PRs are blocked (merge prevented) if any finding at or above this level exists.
 # A per-repo `.timefrugal-qa.yml` (`block_merge_threshold:`) takes precedence
 # over this env var when both are present -- see qa_agent.repo_config.

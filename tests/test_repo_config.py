@@ -130,6 +130,155 @@ class TestLoadRepoConfigMalformedFieldTypes(unittest.TestCase):
         self.assertEqual(cfg.severity_overrides, {})
 
 
+class TestLoadRepoConfigBlockMergeThreshold(unittest.TestCase):
+    """Regression coverage for the round-3 finding: `block_merge_threshold`
+    had zero validation, so a typo or wrong-type value crashed the entire
+    gate via `threshold_order.index(threshold)` raising ValueError -- and
+    unlike the other fields, nothing in the call chain caught it."""
+
+    def _load(self, yaml_text):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, ".timefrugal-qa.yml")
+            with open(path, "w") as f:
+                f.write(yaml_text)
+            return load_repo_config(tmpdir)
+
+    def test_typo_value_falls_back_to_none_without_raising(self):
+        cfg = self._load("block_merge_threshold: CRIT\n")  # must not raise
+        self.assertIsNone(cfg.block_merge_threshold)
+
+    def test_wrong_case_falls_back_to_none_without_raising(self):
+        # Case matters: the codebase's severities are all upper-case
+        # constants, matched with exact equality/list membership elsewhere
+        # (e.g. threshold_order.index()), so lower/mixed case is invalid.
+        cfg = self._load("block_merge_threshold: high\n")  # must not raise
+        self.assertIsNone(cfg.block_merge_threshold)
+
+    def test_wrong_type_int_falls_back_to_none_without_raising(self):
+        cfg = self._load("block_merge_threshold: 5\n")  # must not raise
+        self.assertIsNone(cfg.block_merge_threshold)
+
+    def test_wrong_type_list_falls_back_to_none_without_raising(self):
+        cfg = self._load("block_merge_threshold: [HIGH]\n")  # must not raise
+        self.assertIsNone(cfg.block_merge_threshold)
+
+    def test_valid_value_is_preserved(self):
+        cfg = self._load("block_merge_threshold: HIGH\n")
+        self.assertEqual(cfg.block_merge_threshold, "HIGH")
+
+    def test_absent_value_is_none(self):
+        cfg = self._load("ai:\n  blocking: true\n")
+        self.assertIsNone(cfg.block_merge_threshold)
+
+
+class TestLoadRepoConfigSeverityOverrideValues(unittest.TestCase):
+    """Regression coverage for a second instance of the same bug class found
+    during the round-4 comprehensive audit: severity_overrides' per-tool
+    values (e.g. `pylint: {F: BOGUS}`) were never validated. That doesn't
+    crash inside repo_config.py or static_analysis.py (has_blocking_issues
+    only does list membership), but it silently produces a Finding with an
+    invalid severity string that later crashes ai_review._format_static_for_ai
+    (and would also crash local_reporter's sort) via a `.index()` lookup that
+    has no containment of its own -- an uncaught crash reachable from a
+    normal review run, not just a hypothetical."""
+
+    def _load(self, yaml_text):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, ".timefrugal-qa.yml")
+            with open(path, "w") as f:
+                f.write(yaml_text)
+            return load_repo_config(tmpdir)
+
+    def test_invalid_leaf_severity_dropped_without_raising(self):
+        cfg = self._load(
+            "severity_overrides:\n  pylint:\n    F: BOGUS\n"
+        )  # must not raise
+        self.assertEqual(cfg.severity_overrides, {"pylint": {}})
+
+    def test_invalid_leaf_severity_does_not_remove_valid_siblings(self):
+        cfg = self._load(
+            "severity_overrides:\n  pylint:\n    F: BOGUS\n    E: MEDIUM\n"
+        )
+        self.assertEqual(cfg.severity_overrides, {"pylint": {"E": "MEDIUM"}})
+
+    def test_wrong_case_leaf_severity_dropped_without_raising(self):
+        cfg = self._load(
+            "severity_overrides:\n  mypy:\n    error: high\n"
+        )  # lower-case "high" is invalid, must not raise
+        self.assertEqual(cfg.severity_overrides, {"mypy": {}})
+
+    def test_non_string_leaf_severity_dropped_without_raising(self):
+        cfg = self._load(
+            "severity_overrides:\n  pylint:\n    F: 5\n"
+        )  # must not raise
+        self.assertEqual(cfg.severity_overrides, {"pylint": {}})
+
+    def test_non_dict_per_tool_value_dropped_without_raising(self):
+        cfg = self._load(
+            "severity_overrides:\n  pylint: not_a_mapping\n"
+        )  # must not raise
+        self.assertEqual(cfg.severity_overrides, {"pylint": {}})
+
+    def test_valid_leaf_severities_preserved(self):
+        cfg = self._load(
+            "severity_overrides:\n  pylint:\n    F: CRITICAL\n    E: LOW\n"
+        )
+        self.assertEqual(cfg.severity_overrides, {"pylint": {"F": "CRITICAL", "E": "LOW"}})
+
+
+class TestLoadRepoConfigAllFieldsMalformedAtOnce(unittest.TestCase):
+    """Stronger regression guard than testing each field in isolation: every
+    field wrong-typed/invalid simultaneously in one file must still load to
+    something functionally identical to RepoConfig() (all defaults), with no
+    exception anywhere in the chain."""
+
+    def test_every_field_malformed_still_yields_effective_defaults(self):
+        yaml_text = """
+ai: "yes"
+block_merge_threshold: CRIT
+severity_overrides:
+  pylint:
+    F: BOGUS
+    E: 5
+  mypy: "not_a_mapping"
+  semgrep:
+    WARNING: low
+ignore: "bogus"
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, ".timefrugal-qa.yml")
+            with open(path, "w") as f:
+                f.write(yaml_text)
+            cfg = load_repo_config(tmpdir)  # must not raise
+
+        # ai_blocking: 'ai' isn't a mapping -> default False.
+        self.assertFalse(cfg.ai_blocking)
+        # block_merge_threshold: invalid -> None (use config.py's default).
+        self.assertIsNone(cfg.block_merge_threshold)
+        # severity_overrides: every leaf was invalid or non-mapping -> all
+        # tool entries present but empty (functionally identical to {} for
+        # every .get(tool, {}) call site in static_analysis.py).
+        self.assertEqual(
+            cfg.severity_overrides,
+            {"pylint": {}, "mypy": {}, "semgrep": {}},
+        )
+        for tool_overrides in cfg.severity_overrides.values():
+            self.assertEqual(tool_overrides, {})
+        # ignore: not a mapping -> default {}.
+        self.assertEqual(cfg.ignore, {})
+
+        # Functionally identical to RepoConfig() for every consumer:
+        # ai_blocking False, threshold None, ignore {} (filter_ignored is a
+        # no-op on {}), and every severity_overrides.get(tool, {}) call
+        # returns {} same as it would against RepoConfig()'s empty dict.
+        self.assertFalse(cfg.ai_blocking)
+        self.assertIsNone(cfg.block_merge_threshold)
+        self.assertEqual(cfg.ignore, {})
+        self.assertEqual(cfg.severity_overrides.get("pylint", {}), {})
+        self.assertEqual(cfg.severity_overrides.get("mypy", {}), {})
+        self.assertEqual(cfg.severity_overrides.get("nonexistent", {}), {})
+
+
 class TestFilterIgnored(unittest.TestCase):
     def _finding(self, tool, rule_id, severity="HIGH", category="security"):
         return Finding(
