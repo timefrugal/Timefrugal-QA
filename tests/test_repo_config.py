@@ -190,6 +190,42 @@ class TestFilterIgnored(unittest.TestCase):
         out = filter_ignored(findings, ignore_map)
         self.assertEqual(out, findings)
 
+    def test_non_list_per_tool_ignore_value_int_does_not_raise(self):
+        # e.g. `ignore: {bandit: 101}` -- a plausible typo forgetting the
+        # brackets around a single rule ID. Must not raise TypeError on the
+        # `f.rule_id in ignored_ids` containment check; the finding should
+        # simply not be filtered.
+        findings = [self._finding("bandit", "B101")]
+        out = filter_ignored(findings, {"bandit": 101})  # must not raise
+        self.assertEqual(out, findings)
+
+    def test_non_list_per_tool_ignore_value_none_does_not_raise(self):
+        # e.g. `ignore: {bandit: null}` (empty YAML value under a key).
+        findings = [self._finding("bandit", "B101")]
+        out = filter_ignored(findings, {"bandit": None})  # must not raise
+        self.assertEqual(out, findings)
+
+    def test_non_list_per_tool_ignore_value_float_does_not_raise(self):
+        findings = [self._finding("bandit", "B101")]
+        out = filter_ignored(findings, {"bandit": 3.14})  # must not raise
+        self.assertEqual(out, findings)
+
+    def test_non_list_per_tool_ignore_value_bool_does_not_raise(self):
+        findings = [self._finding("bandit", "B101")]
+        out = filter_ignored(findings, {"bandit": True})  # must not raise
+        self.assertEqual(out, findings)
+
+    def test_non_list_per_tool_ignore_value_does_not_affect_other_tools(self):
+        # A bad value for one tool shouldn't stop a valid list from working
+        # for a different tool in the same ignore map.
+        findings = [
+            self._finding("bandit", "B101"),
+            self._finding("pylint", "E0001"),
+        ]
+        ignore_map = {"bandit": 101, "pylint": ["E0001"]}
+        out = filter_ignored(findings, ignore_map)  # must not raise
+        self.assertEqual([f.rule_id for f in out], ["B101"])
+
 
 if __name__ == "__main__":
     unittest.main()

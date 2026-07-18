@@ -77,9 +77,19 @@ def filter_ignored(findings: List, ignore_map: Dict) -> List:
     if not ignore_map or not isinstance(ignore_map, dict):
         return findings
     out = []
+    warned_tool_keys = set()
     for f in findings:
         tool_key = f.tool.replace("-", "_")
         ignored_ids = ignore_map.get(tool_key, [])
+        if not isinstance(ignored_ids, list):
+            if tool_key not in warned_tool_keys:
+                print(
+                    f"[repo_config] ignore.{tool_key} did not parse to a list"
+                    " -- ignoring",
+                    file=sys.stderr,
+                )
+                warned_tool_keys.add(tool_key)
+            ignored_ids = []
         if f.rule_id in ignored_ids:
             continue
         out.append(f)
