@@ -75,7 +75,7 @@ def print_report(
     if static_results.findings:
         console.print("\n[bold]Static Analysis Findings:[/bold]")
         for f in sorted(static_results.findings,
-                        key=lambda x: ["CRITICAL","HIGH","MEDIUM","LOW","INFO"].index(x.severity)):
+                        key=lambda x: config.SEVERITY_ORDER.index(x.severity)):
             emoji = SEVERITY_EMOJI.get(f.severity, "⚪")
             style = SEVERITY_STYLE.get(f.severity, "dim")
             console.print(
@@ -87,7 +87,7 @@ def print_report(
     if ai_review.findings:
         console.print("\n[bold]🤖 AI Code Review Findings:[/bold]")
         for f in sorted(ai_review.findings,
-                        key=lambda x: ["CRITICAL","HIGH","MEDIUM","LOW","INFO"].index(x.severity)):
+                        key=lambda x: config.SEVERITY_ORDER.index(x.severity)):
             emoji = SEVERITY_EMOJI.get(f.severity, "⚪")
             style = SEVERITY_STYLE.get(f.severity, "dim")
             loc = f"{f.file}:{f.line}" if f.line else f.file

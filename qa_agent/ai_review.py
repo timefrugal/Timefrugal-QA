@@ -13,7 +13,19 @@ import openai
 from openai import OpenAI
 
 from qa_agent import config
+from qa_agent.repo_config import RepoConfig
 from qa_agent.static_analysis import AnalysisResults
+
+# The only severities the AI's JSON response is allowed to carry. Anything
+# else (hallucinated string, wrong case, missing field) is treated as the
+# lowest, non-blocking severity rather than trusted outright (H1: AI findings
+# shouldn't independently block with unvalidated severity).
+_VALID_SEVERITIES = set(config.SEVERITY_ORDER)
+
+
+def _validate_severity(raw) -> str:
+    sev = str(raw).strip().upper() if raw else ""
+    return sev if sev in _VALID_SEVERITIES else config.SEVERITY_INFO
 
 
 @dataclass
@@ -33,9 +45,16 @@ class AIReview:
     generated_tests: str = ""      # pytest code block
     architecture_notes: str = ""
     errors: List[str] = field(default_factory=list)
+    # AI findings are advisory-only (never block a merge on their own) unless
+    # the target repo's .timefrugal-qa.yml explicitly opts in via `ai.blocking:
+    # true` (H1: AI findings shouldn't independently block with unvalidated
+    # severity). Set by review_code() from the repo_config it was given.
+    ai_blocking: bool = False
 
     @property
     def has_blocking_issues(self) -> bool:
+        if not self.ai_blocking:
+            return False
         return any(
             f.severity in (config.SEVERITY_CRITICAL, config.SEVERITY_HIGH)
             for f in self.findings
@@ -186,12 +205,13 @@ def review_code(
     static_results: AnalysisResults,
     repo_name: str = "",
     language: str = "python",
+    repo_config: Optional[RepoConfig] = None,
 ) -> AIReview:
     """
     Send changed file contents + static analysis findings to GitHub Models AI.
     Returns structured AIReview.
     """
-    review = AIReview()
+    review = AIReview(ai_blocking=bool(repo_config.ai_blocking) if repo_config else False)
 
     if not file_contents:
         review.errors.append("No file contents provided for AI review.")
@@ -253,7 +273,7 @@ Please perform a thorough code review of the changed files above.
 
     for item in data.get("findings", []):
         review.findings.append(AIFinding(
-            severity=item.get("severity", config.SEVERITY_INFO),
+            severity=_validate_severity(item.get("severity", config.SEVERITY_INFO)),
             category=item.get("category", "quality"),
             file=item.get("file", ""),
             line=item.get("line", 0),
@@ -343,7 +363,7 @@ def _format_static_for_ai(results: AnalysisResults) -> str:
     # Show top findings only (cap at 20 to stay within token budget)
     top = sorted(
         results.findings,
-        key=lambda f: ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"].index(f.severity)
+        key=lambda f: config.SEVERITY_ORDER.index(f.severity)
     )[:20]
     for f in top:
         lines.append(f"- [{f.severity}] {f.tool} | {f.file}:{f.line} | {f.message}")

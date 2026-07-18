@@ -12,6 +12,7 @@ from typing import List, Optional
 from qa_agent import config
 from qa_agent.static_analysis import run_all, detect_language, AnalysisResults
 from qa_agent.ai_review import review_code, generate_tests
+from qa_agent.repo_config import load_repo_config
 
 
 # ──────────────────────────────────────────────
@@ -126,6 +127,9 @@ def run(
         0 if all checks pass, 1 if blocking issues found, 2 on fatal error.
     """
 
+    # ── 0. Load per-repo QA config (.timefrugal-qa.yml), if any ───────
+    repo_config = load_repo_config(project_root)
+
     # ── 1. Discover changed files ──────────────────────────────────────
     print("[agent] Discovering changed files...")
     changed = get_changed_files(base_ref)
@@ -145,7 +149,7 @@ def run(
 
     # ── 3. Static analysis ────────────────────────────────────────────
     print(f"[agent] Running static analysis for {language}...")
-    static_results = run_all(changed, project_root=project_root)
+    static_results = run_all(changed, project_root=project_root, repo_config=repo_config)
     s = static_results.summary()
     print(
         f"[agent] Static analysis complete — "
@@ -163,6 +167,7 @@ def run(
             static_results=static_results,
             repo_name=config.GITHUB_REPOSITORY,
             language=language,
+            repo_config=repo_config,
         )
         tests_future = (
             pool.submit(generate_tests, file_contents, existing_tests, language)
