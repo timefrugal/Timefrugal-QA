@@ -301,6 +301,7 @@ def run_radon(files: List[str]) -> AnalysisResults:
     try:
         data = json.loads(stdout)
     except json.JSONDecodeError:
+        results.errors.append("radon: could not parse output")
         return results
 
     for filepath, items in data.items():

@@ -180,6 +180,7 @@ def run(
 
     # ── 6. Determine overall verdict ──────────────────────────────────
     blocked = static_results.has_blocking_issues or ai_review.has_blocking_issues
+    errored = mode == "ci" and bool(static_results.errors or ai_review.errors)
 
     # ── 7. Report ─────────────────────────────────────────────────────
     if mode == "ci":
@@ -189,6 +190,7 @@ def run(
             ai_review=ai_review,
             generated_tests=generated_tests,
             blocked=blocked,
+            errored=errored,
         )
     else:
         _report_local(
@@ -198,17 +200,17 @@ def run(
             changed_files=changed,
         )
 
-    return 1 if blocked else 0
+    return 1 if blocked else (2 if errored else 0)
 
 
-def _report_ci(pr_number, static_results, ai_review, generated_tests, blocked):
+def _report_ci(pr_number, static_results, ai_review, generated_tests, blocked, errored):
     """Report to GitHub PR comment, commit status, and Actions step summary."""
     from qa_agent.pr_reporter import post_pr_comment, set_commit_status, write_step_summary
     if pr_number:
         print("[agent] Posting PR comment...")
         post_pr_comment(pr_number, static_results, ai_review, generated_tests)
     print("[agent] Setting commit status check...")
-    set_commit_status(blocked=blocked)
+    set_commit_status(blocked=blocked, errored=errored)
     write_step_summary(static_results, ai_review, generated_tests)
 
 

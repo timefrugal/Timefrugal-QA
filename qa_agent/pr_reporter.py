@@ -82,9 +82,9 @@ def post_pr_comment(
     return True
 
 
-def set_commit_status(blocked: bool, description: str = "") -> bool:
+def set_commit_status(blocked: bool, errored: bool = False, description: str = "") -> bool:
     """
-    Set a GitHub commit status check (success/failure).
+    Set a GitHub commit status check (success/failure/error).
     Returns True on success.
     """
     repo = config.GITHUB_REPOSITORY
@@ -93,10 +93,16 @@ def set_commit_status(blocked: bool, description: str = "") -> bool:
         print("[pr_reporter] Skipping status check: GITHUB_REPOSITORY or GITHUB_SHA not set.")
         return False
 
-    state = "failure" if blocked else "success"
+    state = "failure" if blocked else "error" if errored else "success"
     desc = description or (
-        "QA failed — blocking issues found. Review the PR comment."
+        (
+            "QA failed — blocking issues found (some tools also failed). Review the PR comment."
+            if errored
+            else "QA failed — blocking issues found. Review the PR comment."
+        )
         if blocked
+        else "QA could not fully run — tool failures. Review the PR comment."
+        if errored
         else "All QA checks passed ✅"
     )
 
@@ -143,9 +149,17 @@ def _build_comment(
     generated_tests: str,
 ) -> str:
     blocked = static.has_blocking_issues or ai.has_blocking_issues
+    errored = bool(static.errors or ai.errors)
     status_line = (
         "## 🔴 Timefrugal-QA — BLOCKED: Critical/High issues require attention before merge"
+        + (
+            " (Note: some analysis tools also failed to complete — see Tool Warnings below.)"
+            if errored
+            else ""
+        )
         if blocked
+        else "## ⚠️ Timefrugal-QA — ERRORED: analysis tools failed, results incomplete"
+        if errored
         else "## ✅ Timefrugal-QA — All checks passed"
     )
 
