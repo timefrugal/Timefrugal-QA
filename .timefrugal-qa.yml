@@ -32,3 +32,14 @@ ignore:
     - CVE-2026-52870  # mcp task/session isolation bypass
     - CVE-2026-52869  # mcp session auth bypass
     - CVE-2026-59950  # mcp WebSocket transport missing origin validation
+
+  # radon's rule_id is a fixed "CC" for every complexity finding regardless
+  # of function/file, so it can't be waived by rule_id without silently
+  # disabling complexity checking for the whole repo -- these two are
+  # waived by exact "file:line" location instead (see filter_ignored in
+  # repo_config.py). Both are pre-existing debt, not something to leave
+  # ignored forever: tracked in issue #10, remove these two lines once
+  # that's fixed, don't just leave them here indefinitely.
+  radon:
+    - qa_agent/agent.py:116          # run(), complexity 21 -- issue #10
+    - qa_agent/pr_reporter.py:146    # _build_comment(), complexity 26 -- issue #10

@@ -9,6 +9,11 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed (this entry)
+- **mypy: `raise last_error` where `last_error: Optional[Exception]`** — `_call_with_fallback`'s final raise, added by the provider-chain work below, was flagged by mypy since the type technically allows `None` even though the preceding loop always assigns it. Added an `assert last_error is not None` immediately before the raise, which mypy's narrowing understands.
+- **`filter_ignored` couldn't precisely waive radon findings** — found while trying to waive two pre-existing HIGH complexity findings (`agent.py:run()` complexity 21, `pr_reporter.py:_build_comment()` complexity 26 — both predate this session's changes, just pulled into diff scope by unrelated edits to the same files) via `.timefrugal-qa.yml`. radon's `rule_id` is a fixed `"CC"` for every complexity finding regardless of function/file, so the existing rule_id-based waiver would have silently disabled complexity checking for the *entire* repo, not just these two functions. `filter_ignored` now also matches a `"file:line"` entry in the same ignore list — unambiguous against real rule_ids/CVEs/GHSAs, none of which contain `:`. The two findings above are now waived precisely by location in `.timefrugal-qa.yml`, with the actual refactor tracked separately in issue #10 (deferred rather than rushed — no local test-execution environment was available this session to safely validate a refactor of unfamiliar 21/26-branch functions).
+- **Stale "Sending to Groq AI" log message** — hardcoded a specific provider name/model that's no longer accurate now that the AI call goes through a fallback chain; the actual provider/model used is only known once `_call_with_fallback` runs. Now says "AI provider chain" generically.
+
 ### Removed
 - The unused `workflow_call`-triggered workflow under `.github/workflows/` — dead code: confirmed no `uses:` reference anywhere in this repo (every consumer installs the self-contained `templates/repo_workflow.yml` copy instead), and it was missing `models: read` permission, so AI calls would have 403'd had it ever been invoked. Reviving a true cross-repo reusable-workflow-call pattern is a deliberate future architecture decision, not done here.
 

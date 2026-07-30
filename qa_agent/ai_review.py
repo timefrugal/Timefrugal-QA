@@ -233,7 +233,11 @@ def _call_with_fallback(make_request: Callable[[OpenAI, str], _T]) -> _T:
                 + (f"falling back to {remaining[0]}..." if remaining else "no more providers configured."),
                 file=sys.stderr,
             )
-    raise last_error  # pylint: disable=raising-bad-type
+    # Unreachable with last_error still None: the early return above
+    # guarantees `providers` is non-empty, so the loop runs at least once
+    # and always assigns last_error before falling through to here.
+    assert last_error is not None
+    raise last_error
 
 
 # ──────────────────────────────────────────────
