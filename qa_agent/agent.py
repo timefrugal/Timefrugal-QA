@@ -166,7 +166,7 @@ def run(
 
     # ── 4+5. AI code review + test generation (parallel) ──────────────
     skip_tests = not generate_test_cases or not file_contents or language == "html"
-    print(f"[agent] Sending to GitHub Models AI ({config.AI_MODEL}) for code review"
+    print(f"[agent] Sending to Groq AI ({config.AI_MODEL}) for code review"
           + (" + test generation..." if not skip_tests else "..."))
     with ThreadPoolExecutor(max_workers=2) as pool:
         review_future = pool.submit(

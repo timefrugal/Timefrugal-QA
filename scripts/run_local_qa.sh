@@ -7,7 +7,7 @@
 # GitHub Actions minutes.
 #
 # Usage (from your project directory):
-#   export GITHUB_TOKEN=ghp_yourtoken
+#   export GROQ_API_KEY=gsk_yourkey
 #   bash /path/to/Timefrugal-QA/scripts/run_local_qa.sh
 #
 #   # Or with options:
@@ -16,7 +16,7 @@
 # Options:
 #   --base <branch>   Base branch to diff against (default: main)
 #   --no-tests        Skip AI test generation (faster)
-#   --model <name>    Override AI model (default: gpt-4o-mini)
+#   --model <name>    Override AI model (default: llama-3.3-70b-versatile)
 # ─────────────────────────────────────────────────────────────────────────────
 
 set -euo pipefail
@@ -35,18 +35,15 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# ── Check GITHUB_TOKEN ───────────────────────────────────────────────────────
-if [ -z "${GITHUB_TOKEN:-}" ]; then
-  # Try gh CLI token as fallback
-  if command -v gh &>/dev/null && gh auth status &>/dev/null 2>&1; then
-    export GITHUB_TOKEN=$(gh auth token)
-    echo "ℹ️  Using GitHub CLI token"
-  else
-    echo "❌ GITHUB_TOKEN not set. Required for GitHub Models AI."
-    echo "   Either: export GITHUB_TOKEN=ghp_yourtoken"
-    echo "   Or:     gh auth login  (then re-run)"
-    exit 1
-  fi
+# ── Check GROQ_API_KEY ───────────────────────────────────────────────────────
+# (GitHub Models, the previous free AI backend, was fully retired 2026-07-30.
+# GITHUB_TOKEN is no longer needed for local runs — only --ci mode posts PR
+# comments/commit statuses via the GitHub API.)
+if [ -z "${GROQ_API_KEY:-}" ]; then
+  echo "❌ GROQ_API_KEY not set. Required for AI code review."
+  echo "   Get a free key at https://console.groq.com/keys, then:"
+  echo "   export GROQ_API_KEY=gsk_yourkey"
+  exit 1
 fi
 
 # ── Check we're in a git repo ────────────────────────────────────────────────

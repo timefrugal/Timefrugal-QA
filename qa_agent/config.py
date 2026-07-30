@@ -4,20 +4,31 @@ Timefrugal-QA Agent Configuration
 import os
 
 # ──────────────────────────────────────────────
-# GitHub Models (free AI — requires GITHUB_TOKEN)
+# AI backend (free — requires GROQ_API_KEY)
+#
+# GitHub Models (the previous free backend) was fully retired by GitHub on
+# 2026-07-30 -- playground, catalog, inference API, and BYOK all gone, for
+# every customer, no exceptions. Switched to Groq's free tier
+# (api.groq.com), which is OpenAI-SDK-compatible so only the base URL,
+# model name, and API key source change here -- review_code()/
+# generate_tests() below are unaffected.
 # ──────────────────────────────────────────────
-GITHUB_MODELS_BASE_URL = "https://models.github.ai/inference"
+AI_BASE_URL = "https://api.groq.com/openai/v1"
 
-# Default model: gpt-4o-mini is free, fast, and capable enough for code review.
-# Switch to "gpt-4o" for deeper analysis (still free, lower rate limit).
-AI_MODEL = os.getenv("QA_AI_MODEL", "gpt-4o-mini")
+# Default model: llama-3.3-70b-versatile is free on Groq's tier (14,400
+# req/day as of this writing) and capable enough for code review; it's the
+# same model this org already uses elsewhere (see bin/jarvis-llm-scout.py
+# in jarvis-infra) so behavior/quality expectations are already known.
+AI_MODEL = os.getenv("QA_AI_MODEL", "llama-3.3-70b-versatile")
 
 # Max tokens for AI responses (keep low to stay within free rate limits)
 AI_MAX_TOKENS = int(os.getenv("QA_AI_MAX_TOKENS", "3000"))
 
-# Retry settings for GitHub Models rate-limit errors (HTTP 429)
+# Retry settings for rate-limit errors (HTTP 429)
 AI_RETRY_MAX_ATTEMPTS = int(os.getenv("QA_AI_RETRY_MAX_ATTEMPTS", "3"))
 AI_RETRY_BASE_DELAY = float(os.getenv("QA_AI_RETRY_BASE_DELAY", "5.0"))  # seconds; doubles each attempt
+
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 
 # ──────────────────────────────────────────────
 # GitHub API

@@ -2,7 +2,7 @@
 
 AI-powered QA agent for **Python, Java, and HTML** repositories. Runs as a GitHub Actions reusable workflow **and** locally before raising a PR — catching issues early to minimize GitHub Actions usage and avoid PR iteration loops.
 
-**Cost: $0.** Uses [GitHub Models](https://github.com/marketplace/models) (free AI with any GitHub account) and open-source analysis tools only.
+**Cost: $0.** Uses [Groq](https://console.groq.com) (free-tier AI) and open-source analysis tools only. (Previously used GitHub Models, which GitHub fully retired 2026-07-30.)
 
 ---
 
@@ -12,7 +12,7 @@ On every pull request (and optionally before raising one locally), the agent:
 
 1. **Language detection** — automatically detects whether changed files are Python, Java, or HTML and selects the appropriate toolchain
 2. **Static analysis** — runs the right tools per language: bandit/pylint/mypy/radon/pip-audit for Python; PMD for Java; htmlhint for HTML; semgrep runs on all three
-3. **AI code review** — sends the diff + static findings to GitHub Models (`gpt-4o-mini`) with a language-specific prompt; reviews for bugs, security vulnerabilities, architecture/design issues, and performance
+3. **AI code review** — sends the diff + static findings to Groq (`llama-3.3-70b-versatile`) with a language-specific prompt; reviews for bugs, security vulnerabilities, architecture/design issues, and performance
 4. **Test generation** — generates pytest tests for Python, JUnit 5 tests for Java (HTML skips — not applicable)
 4. **Reports** — posts a structured review comment on the PR, sets a commit status check (blocks merge if critical/high issues are found), and writes a formatted summary to the GitHub Actions step summary UI
 
@@ -84,7 +84,7 @@ Store a PAT as a repository secret so the daily scheduled workflow can add the Q
 From inside any of your project directories:
 
 ```bash
-export GITHUB_TOKEN=ghp_yourtoken   # or: gh auth login
+export GROQ_API_KEY=gsk_yourkey   # free key: https://console.groq.com/keys
 bash /path/to/Timefrugal-QA/scripts/run_local_qa.sh
 ```
 
@@ -104,7 +104,7 @@ python -m qa_agent [options]
 | `--base <ref>` | Diff against a different branch or commit (e.g. `--base develop`) |
 | `--no-tests` | Skip AI test case generation |
 | `--commit-tests` | Write generated tests to `tests/` and commit them (local mode only) |
-| `--model <id>` | Override the GitHub Models AI model (e.g. `--model gpt-4o`) |
+| `--model <id>` | Override the Groq AI model (e.g. `--model llama-3.1-8b-instant`) |
 | `--ci` | CI mode — posts PR comment and sets commit status instead of terminal output |
 | `--pr <number>` | PR number, used with `--ci` (set automatically in GitHub Actions) |
 | `--root <path>` | Project root directory (default: current directory) |
@@ -137,16 +137,16 @@ pip install pre-commit
 pre-commit install
 ```
 
-`GITHUB_TOKEN` must be set in your environment for the AI review to run.
+`GROQ_API_KEY` must be set in your environment for the AI review to run.
 
 ---
 
-## GitHub token scopes
+## Token/key requirements
 
-| Context | Required scopes |
+| Context | Required |
 |---------|----------------|
-| GitHub Actions (CI) | `GITHUB_TOKEN` is automatically provided — no setup needed |
-| Local runner | Personal access token with `repo` scope (classic) or fine-grained token with read/write PR access |
+| GitHub Actions (CI) | `GITHUB_TOKEN` is automatically provided for PR comments/commit status — no setup needed. `GROQ_API_KEY` must be added as a repo secret for the AI review step (see Step 2b-equivalent: add it under Settings → Secrets → Actions) |
+| Local runner | `GROQ_API_KEY` — free at [console.groq.com/keys](https://console.groq.com/keys) |
 | setup_all_repos.sh / setup_new_repo.sh | Personal access token with `repo` scope (classic) or fine-grained token with Contents read/write |
 | auto-setup.yml (scheduled) | Fine-grained PAT stored as `GH_PAT` secret — Contents read/write across all repos |
 
@@ -158,20 +158,14 @@ All config is via environment variables:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `QA_AI_MODEL` | `gpt-4o-mini` | GitHub Models AI model |
+| `QA_AI_MODEL` | `llama-3.3-70b-versatile` | Groq AI model |
 | `QA_AI_MAX_TOKENS` | `3000` | Max tokens per AI response |
-| `QA_AI_RETRY_MAX_ATTEMPTS` | `3` | Retries on GitHub Models rate-limit (HTTP 429) |
+| `QA_AI_RETRY_MAX_ATTEMPTS` | `3` | Retries on Groq rate-limit (HTTP 429) |
 | `QA_AI_RETRY_BASE_DELAY` | `5.0` | Base delay in seconds between retries (doubles each attempt) |
 | `QA_MAX_COMPLEXITY` | `10` | Cyclomatic complexity threshold |
 | `QA_REPORT_FILE` | `qa_report.md` | Local report output path |
 
-To use a more powerful (but still free) model:
-
-```yaml
-# in templates/repo_workflow.yml
-with:
-  ai-model: "gpt-4o"   # higher quality, lower rate limit
-```
+To use a different (still free) Groq model, set `QA_AI_MODEL` — see [console.groq.com](https://console.groq.com/docs/models) for current options.
 
 ---
 
@@ -193,7 +187,7 @@ PMD and htmlhint degrade gracefully if not installed — the agent logs a warnin
 
 | Tool | Language | Purpose |
 |------|----------|---------|
-| [GitHub Models](https://github.com/marketplace/models) | All | Free AI (`gpt-4o-mini`) — code review and test generation |
+| [Groq](https://console.groq.com) | All | Free AI (`llama-3.3-70b-versatile`) — code review and test generation |
 | [semgrep](https://semgrep.dev) | All | SAST — free community rules + bundled custom rules |
 | [bandit](https://bandit.readthedocs.io) | Python | Security linter |
 | [pylint](https://pylint.org) | Python | Code quality and bug detection |

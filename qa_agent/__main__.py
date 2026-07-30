@@ -58,7 +58,7 @@ def main():
     parser.add_argument(
         "--model",
         default=None,
-        help="Override GitHub Models AI model (default: gpt-4o-mini)",
+        help="Override the AI review model (default: llama-3.3-70b-versatile)",
     )
 
     args = parser.parse_args()

@@ -1,7 +1,8 @@
 """
-AI-powered code review using GitHub Models (free).
-Uses the OpenAI-compatible endpoint at models.github.ai/inference
-with the user's GITHUB_TOKEN — no extra billing.
+AI-powered code review using Groq (free tier).
+Uses Groq's OpenAI-compatible endpoint at api.groq.com/openai/v1
+with GROQ_API_KEY — no extra billing. (GitHub Models, the previous
+backend, was fully retired by GitHub on 2026-07-30.)
 """
 import json
 import os
@@ -184,14 +185,15 @@ def _call_with_retry(fn: Callable[[], _T]) -> _T:
 # ──────────────────────────────────────────────
 
 def _get_client() -> OpenAI:
-    token = config.GITHUB_TOKEN
+    token = config.GROQ_API_KEY
     if not token:
         raise ValueError(
-            "GITHUB_TOKEN environment variable not set. "
-            "Required to access GitHub Models free AI."
+            "GROQ_API_KEY environment variable not set. "
+            "Required to access Groq's free AI tier for code review "
+            "(GitHub Models, the previous backend, was retired 2026-07-30)."
         )
     return OpenAI(
-        base_url=config.GITHUB_MODELS_BASE_URL,
+        base_url=config.AI_BASE_URL,
         api_key=token,
     )
 
@@ -208,7 +210,7 @@ def review_code(
     repo_config: Optional[RepoConfig] = None,
 ) -> AIReview:
     """
-    Send changed file contents + static analysis findings to GitHub Models AI.
+    Send changed file contents + static analysis findings to Groq AI.
     Returns structured AIReview.
     """
     review = AIReview(ai_blocking=bool(repo_config.ai_blocking) if repo_config else False)
@@ -265,7 +267,7 @@ Please perform a thorough code review of the changed files above.
         review.errors.append(f"AI response was not valid JSON: {e}")
         return review
     except Exception as e:
-        review.errors.append(f"GitHub Models API error: {e}")
+        review.errors.append(f"Groq API error: {e}")
         return review
 
     review.summary = data.get("summary", "")

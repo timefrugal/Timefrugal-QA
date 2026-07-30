@@ -1,7 +1,7 @@
 # Timefrugal-QA — Claude Code Handoff
 
 ## Project purpose
-AI-powered QA agent for Python, Java, and HTML repos. Runs as a GitHub Actions reusable workflow AND locally before raising a PR. Zero cost — uses GitHub Models free AI (`gpt-4o-mini`) and open-source static analysis tools only.
+AI-powered QA agent for Python, Java, and HTML repos. Runs as a GitHub Actions reusable workflow AND locally before raising a PR. Zero cost — uses Groq free-tier AI (`llama-3.3-70b-versatile`) and open-source static analysis tools only. (Was GitHub Models until GitHub fully retired it 2026-07-30; see CHANGELOG.md [Unreleased].)
 
 **Owner:** github.com/Timefrugal  
 **Target languages:** Python, Java, HTML (auto-detected from changed file extensions)  
@@ -16,13 +16,13 @@ Timefrugal-QA/
 ├── qa_agent/
 │   ├── __init__.py          # version = 1.2.0
 │   ├── __main__.py          # CLI: python -m qa_agent [--ci|--base|--no-tests|--commit-tests|--model]
-│   ├── config.py            # all config via env vars (GITHUB_TOKEN, QA_AI_MODEL, etc.)
+│   ├── config.py            # all config via env vars (GITHUB_TOKEN, GROQ_API_KEY, QA_AI_MODEL, etc.)
 │   ├── agent.py             # orchestrator: git diff → static analysis → AI review → report
 │   ├── static_analysis.py  # language detection + per-language tool runners (parallel); Python: bandit/pylint/mypy/radon/pip-audit; Java: PMD; HTML: htmlhint; all: semgrep
 │   ├── semgrep_rules/
 │   │   ├── python-security.yml  # subprocess shell=True, eval/exec, pickle, hardcoded secrets, requests timeout
 │   │   └── python-quality.yml   # bare except, mutable default args
-│   ├── ai_review.py         # GitHub Models API; language-aware review + test prompts (Python→pytest, Java→JUnit 5, HTML skips tests)
+│   ├── ai_review.py         # Groq API (OpenAI-compatible); language-aware review + test prompts (Python→pytest, Java→JUnit 5, HTML skips tests)
 │   ├── pr_reporter.py       # posts PR comment + sets commit status check via GitHub API
 │   └── local_reporter.py   # rich terminal output + saves qa_report.md
 ├── .github/workflows/
@@ -30,7 +30,7 @@ Timefrugal-QA/
 ├── templates/
 │   └── repo_workflow.yml    # copy this to .github/workflows/qa.yml in each target repo
 ├── scripts/
-│   ├── run_local_qa.sh      # local pre-PR runner (uses GITHUB_TOKEN or gh CLI)
+│   ├── run_local_qa.sh      # local pre-PR runner (uses GROQ_API_KEY)
 │   ├── setup_all_repos.sh  # bulk-adds workflow to all repos via gh CLI + GitHub API
 │   └── setup_new_repo.sh   # adds workflow to a single named repo (usage: bash setup_new_repo.sh owner/repo)
 ├── .pre-commit-hooks.yaml   # pre-commit framework integration
@@ -43,7 +43,7 @@ Timefrugal-QA/
 
 ## Architecture decisions (don't change without reason)
 
-- **Free AI:** GitHub Models at `https://models.github.ai/inference`, authenticated with `GITHUB_TOKEN` (no extra billing). Default model: `gpt-4o-mini`. Configurable via `QA_AI_MODEL` env var.
+- **Free AI:** Groq at `https://api.groq.com/openai/v1`, authenticated with `GROQ_API_KEY` (no extra billing). Default model: `llama-3.3-70b-versatile`. Configurable via `QA_AI_MODEL` env var. (Switched from GitHub Models 2026-07-30 when GitHub fully retired it — see CHANGELOG.md.)
 - **Per-repo installable pattern:** Python logic lives in ONE repo (`qa_agent`), installed via `pip install git+...@v1` — auto-updates for consumers whenever they re-run their workflow (since the pin resolves at install time). The workflow YAML itself (`templates/repo_workflow.yml`) is copied into each target repo at install time and is NOT automatically refreshed later — `auto-setup.yml`'s skip-if-exists check means workflow-level changes require manually re-running `setup_all_repos.sh`/`setup_new_repo.sh` against already-installed repos.
 - **Blocking threshold:** CRITICAL + HIGH severity → blocks merge. MEDIUM/LOW → advisory. Controlled by `BLOCK_MERGE_THRESHOLD` in `config.py`.
 - **PR comment deduplication:** `pr_reporter.py` looks for an existing comment with the marker `<!-- timefrugal-qa-comment -->` and updates it rather than appending a new one on each push.
@@ -101,8 +101,9 @@ Method: full read of `qa_agent/*.py`, both workflows, `scripts/`, `templates/`, 
 
 | Variable | Where set | Purpose |
 |----------|-----------|---------|
-| `GITHUB_TOKEN` | Auto in Actions; manual locally | Auth for GitHub Models AI + GitHub API |
-| `QA_AI_MODEL` | Optional | Override model (default: `gpt-4o-mini`) |
+| `GITHUB_TOKEN` | Auto in Actions; manual locally | Auth for GitHub API (PR comments, commit status) |
+| `GROQ_API_KEY` | Required (CI: repo secret; local: manual) | Auth for Groq AI review |
+| `QA_AI_MODEL` | Optional | Override model (default: `llama-3.3-70b-versatile`) |
 | `QA_AI_MAX_TOKENS` | Optional | Max AI response tokens (default: 3000) |
 | `QA_AI_RETRY_MAX_ATTEMPTS` | Optional | Retries on rate-limit HTTP 429 (default: 3) |
 | `QA_AI_RETRY_BASE_DELAY` | Optional | Base retry delay in seconds, doubles each attempt (default: 5.0) |
@@ -118,7 +119,7 @@ Method: full read of `qa_agent/*.py`, both workflows, `scripts/`, `templates/`, 
 
 ```bash
 # From inside any Python, Java, or HTML project directory:
-export GITHUB_TOKEN=ghp_yourtoken
+export GROQ_API_KEY=gsk_yourkey
 
 # Full review (default: diff vs origin/main)
 python -m qa_agent
@@ -129,8 +130,8 @@ python -m qa_agent --base develop --no-tests
 # Write generated tests to tests/ and commit them
 python -m qa_agent --commit-tests
 
-# Use a more powerful model
-python -m qa_agent --model gpt-4o
+# Use a different Groq model
+python -m qa_agent --model llama-3.1-8b-instant
 ```
 
 ### All CLI flags
@@ -140,7 +141,7 @@ python -m qa_agent --model gpt-4o
 | `--base <ref>` | Diff against a different branch or commit (default: `origin/main`) |
 | `--no-tests` | Skip AI test case generation |
 | `--commit-tests` | Write generated tests to `tests/` and commit (local mode only) |
-| `--model <id>` | Override the GitHub Models AI model |
+| `--model <id>` | Override the Groq AI model |
 | `--ci` | CI mode — posts PR comment + sets commit status |
 | `--pr <number>` | PR number (CI mode; set automatically in Actions) |
 | `--root <path>` | Project root directory (default: `.`) |

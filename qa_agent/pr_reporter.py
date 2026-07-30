@@ -274,7 +274,7 @@ def _build_comment(
 
     parts.append(
         "_Powered by [Timefrugal-QA](https://github.com/Timefrugal/Timefrugal-QA) "
-        "· Free AI via GitHub Models · Open-source analysis tools_"
+        "· Free AI via Groq · Open-source analysis tools_"
     )
 
     return "\n".join(parts)
