@@ -113,8 +113,24 @@ def load_repo_config(project_root: str) -> RepoConfig:
 
 
 def filter_ignored(findings: List, ignore_map: Dict) -> List:
-    """Remove findings whose (tool, rule_id) appears in ignore_map. tool names
-    are normalized (hyphens -> underscores) to match YAML keys like pip_audit."""
+    """Remove findings whose (tool, rule_id) -- OR any of the finding's known
+    aliases, OR its "file:line" location -- appears in ignore_map. tool
+    names are normalized (hyphens -> underscores) to match YAML keys like
+    pip_audit.
+
+    Alias matching matters for pip-audit specifically: its OSV-based `id` is
+    frequently a GHSA-* identifier, with the CVE number only present in
+    `aliases`. A waiver list written against CVE IDs (the natural thing to
+    write, since that's what most vulnerability descriptions lead with)
+    would otherwise never match and silently never take effect.
+
+    Location matching (a list entry shaped like "path/to/file.py:123")
+    matters for tools like radon, whose findings all share one generic
+    rule_id ("CC" for every complexity finding, regardless of function or
+    file) -- rule_id-only matching can't waive one specific finding without
+    silently waiving every complexity finding the tool would ever report.
+    No collision risk with rule_id/alias matching: real rule_ids/CVEs/GHSAs
+    never contain a ":", so the two forms are unambiguous in the same list."""
     if not ignore_map or not isinstance(ignore_map, dict):
         return findings
     out = []
@@ -131,7 +147,8 @@ def filter_ignored(findings: List, ignore_map: Dict) -> List:
                 )
                 warned_tool_keys.add(tool_key)
             ignored_ids = []
-        if f.rule_id in ignored_ids:
+        finding_ids = {f.rule_id, *getattr(f, "aliases", []), f"{f.file}:{f.line}"}
+        if finding_ids & set(ignored_ids):
             continue
         out.append(f)
     return out

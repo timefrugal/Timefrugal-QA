@@ -4,20 +4,82 @@ Timefrugal-QA Agent Configuration
 import os
 
 # ──────────────────────────────────────────────
-# GitHub Models (free AI — requires GITHUB_TOKEN)
+# AI backend — a chain of free-tier providers, tried in order
+#
+# GitHub Models (the original free backend) was fully retired by GitHub on
+# 2026-07-30 -- playground, catalog, inference API, and BYOK all gone, for
+# every customer, no exceptions. Switched to a provider chain instead of a
+# single backend, since free tiers come with real rate limits (Groq's
+# llama-3.3-70b-versatile: 12,000 TPM) that a single moderately-sized PR
+# can legitimately hit -- see ai_review.py's _call_with_fallback for the
+# fallback mechanism. Every provider here is OpenAI-SDK-compatible (same
+# base_url + api_key + chat.completions.create() shape), so adding another
+# is just another entry in AI_PROVIDERS.
 # ──────────────────────────────────────────────
-GITHUB_MODELS_BASE_URL = "https://models.inference.ai.azure.com"
+AI_BASE_URL = "https://api.groq.com/openai/v1"  # kept for backward compat; AI_PROVIDERS is authoritative
 
-# Default model: gpt-4o-mini is free, fast, and capable enough for code review.
-# Switch to "gpt-4o" for deeper analysis (still free, lower rate limit).
-AI_MODEL = os.getenv("QA_AI_MODEL", "gpt-4o-mini")
+# Default model: llama-3.3-70b-versatile is free on Groq's tier and capable
+# enough for code review; it's the same model this org already uses
+# elsewhere (see bin/jarvis-llm-scout.py in jarvis-infra) so behavior/
+# quality expectations are already known.
+AI_MODEL = os.getenv("QA_AI_MODEL", "llama-3.3-70b-versatile")
+
+# Cerebras free tier's current model lineup (gpt-oss-120b, production) --
+# same model family already used for jarvis-infra's own primary Ollama
+# workhorse (Z13/jarvis-1 Slot A), so likewise a known quantity. Cerebras'
+# free tier has 2.5x Groq's TPM ceiling (30K vs 12K) as of this writing,
+# making it a strong second hop when Groq is out of quota.
+AI_MODEL_CEREBRAS = os.getenv("QA_AI_MODEL_CEREBRAS", "gpt-oss-120b")
 
 # Max tokens for AI responses (keep low to stay within free rate limits)
 AI_MAX_TOKENS = int(os.getenv("QA_AI_MAX_TOKENS", "3000"))
 
-# Retry settings for GitHub Models rate-limit errors (HTTP 429)
+# Total character budget for changed-file content in a single AI request,
+# spread across however many files changed. A fixed per-file cap (the old
+# behavior) scales unboundedly with file count -- a 9-file PR could request
+# ~15,500 tokens against Groq's free-tier 12,000 TPM limit and 413 outright.
+# review_code() and generate_tests() run concurrently (agent.py's
+# ThreadPoolExecutor) and share the same per-org TPM budget within the same
+# minute, so this is deliberately conservative for a single call.
+AI_MAX_TOTAL_CONTENT_CHARS = int(os.getenv("QA_AI_MAX_TOTAL_CONTENT_CHARS", "16000"))
+
+# Retry settings for rate-limit errors (HTTP 429)
 AI_RETRY_MAX_ATTEMPTS = int(os.getenv("QA_AI_RETRY_MAX_ATTEMPTS", "3"))
 AI_RETRY_BASE_DELAY = float(os.getenv("QA_AI_RETRY_BASE_DELAY", "5.0"))  # seconds; doubles each attempt
+
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+CEREBRAS_API_KEY = os.getenv("CEREBRAS_API_KEY", "")
+MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY", "")
+
+# mistral-small-latest is Mistral's free "Experiment" tier model (opt-in to
+# data training required to unlock the tier's full ~1B token/month quota --
+# DJ's own account/tradeoff decision, not this tool's to make).
+AI_MODEL_MISTRAL = os.getenv("QA_AI_MODEL_MISTRAL", "mistral-small-latest")
+
+# Provider chain, tried in this order by ai_review._call_with_fallback. A
+# provider whose API key env var isn't set is skipped, not an error --
+# consumer repos can add CEREBRAS_API_KEY/MISTRAL_API_KEY whenever they want
+# the fallback, and things keep working Groq-only until then.
+AI_PROVIDERS = [
+    {
+        "name": "groq",
+        "base_url": AI_BASE_URL,
+        "api_key": GROQ_API_KEY,
+        "model": AI_MODEL,
+    },
+    {
+        "name": "cerebras",
+        "base_url": os.getenv("CEREBRAS_BASE_URL", "https://api.cerebras.ai/v1"),
+        "api_key": CEREBRAS_API_KEY,
+        "model": AI_MODEL_CEREBRAS,
+    },
+    {
+        "name": "mistral",
+        "base_url": os.getenv("MISTRAL_BASE_URL", "https://api.mistral.ai/v1"),
+        "api_key": MISTRAL_API_KEY,
+        "model": AI_MODEL_MISTRAL,
+    },
+]
 
 # ──────────────────────────────────────────────
 # GitHub API

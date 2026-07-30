@@ -53,6 +53,58 @@ class TestRunPipAuditIsScopedToTargetProject(unittest.TestCase):
         self.assertEqual(cmd[r_index + 1], "requirements.txt")
 
 
+class TestRunPipAuditCapturesAliases(unittest.TestCase):
+    """
+    Regression coverage: pip-audit's OSV-based `id` is frequently a GHSA-*
+    identifier, with the CVE number only present in `aliases`. A repo's
+    .timefrugal-qa.yml waiver list is naturally written against CVE IDs
+    (that's what vulnerability descriptions lead with) -- if aliases aren't
+    captured onto the Finding, such a waiver silently never matches and the
+    finding stays blocking forever, even though it was investigated and
+    accepted. See repo_config.filter_ignored for the matching side of this.
+    """
+
+    def test_aliases_captured_from_pip_audit_output(self):
+        fake_output = (
+            '{"dependencies": [{"name": "mcp", "version": "1.23.3", "vulns": '
+            '[{"id": "GHSA-x5r2-r74c-3w28", '
+            '"aliases": ["CVE-2026-52870"], '
+            '"description": "task isolation bypass", '
+            '"fix_versions": ["1.27.2"]}]}]}'
+        )
+
+        def fake_run(cmd, cwd=None):
+            return 0, fake_output, ""
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            (Path(tmp_dir) / "requirements.txt").write_text("mcp==1.23.3\n")
+            with mock.patch.object(static_analysis, "_run", side_effect=fake_run):
+                results = run_pip_audit(tmp_dir)
+
+        self.assertEqual(len(results.findings), 1)
+        finding = results.findings[0]
+        self.assertEqual(finding.rule_id, "GHSA-x5r2-r74c-3w28")
+        self.assertEqual(finding.aliases, ["CVE-2026-52870"])
+
+    def test_missing_aliases_key_defaults_to_empty_list(self):
+        fake_output = (
+            '{"dependencies": [{"name": "requests", "version": "2.0.0", "vulns": '
+            '[{"id": "PYSEC-2026-0001", '
+            '"description": "some issue", '
+            '"fix_versions": ["2.1.0"]}]}]}'
+        )
+
+        def fake_run(cmd, cwd=None):
+            return 0, fake_output, ""
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            (Path(tmp_dir) / "requirements.txt").write_text("requests==2.0.0\n")
+            with mock.patch.object(static_analysis, "_run", side_effect=fake_run):
+                results = run_pip_audit(tmp_dir)
+
+        self.assertEqual(results.findings[0].aliases, [])
+
+
 class TestRunAllAggregatesErrorsWithoutDroppingFindings(unittest.TestCase):
     """
     Regression coverage: if one tool runner inside run_all's ThreadPoolExecutor

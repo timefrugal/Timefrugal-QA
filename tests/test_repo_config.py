@@ -280,15 +280,17 @@ ignore: "bogus"
 
 
 class TestFilterIgnored(unittest.TestCase):
-    def _finding(self, tool, rule_id, severity="HIGH", category="security"):
+    def _finding(self, tool, rule_id, severity="HIGH", category="security", aliases=None,
+                 file="app.py", line=1):
         return Finding(
             tool=tool,
             severity=severity,
             category=category,
-            file="app.py",
-            line=1,
+            file=file,
+            line=line,
             message="msg",
             rule_id=rule_id,
+            aliases=aliases or [],
         )
 
     def test_removes_matching_tool_and_rule_id(self):
@@ -336,6 +338,57 @@ class TestFilterIgnored(unittest.TestCase):
             self._finding("pylint", "B101"),  # same rule_id, different tool
         ]
         ignore_map = {"bandit": ["B101"]}
+        out = filter_ignored(findings, ignore_map)
+        self.assertEqual(out, findings)
+
+    def test_matches_via_alias_when_waiver_written_against_cve_not_primary_id(self):
+        # pip-audit's OSV `id` is often GHSA-*, with the CVE only in aliases.
+        # A waiver written against the CVE (the natural thing, since that's
+        # what advisory descriptions lead with) must still match.
+        findings = [
+            self._finding(
+                "pip-audit", "GHSA-x5r2-r74c-3w28",
+                category="dependency", aliases=["CVE-2026-52870"],
+            ),
+        ]
+        ignore_map = {"pip_audit": ["CVE-2026-52870"]}
+        out = filter_ignored(findings, ignore_map)
+        self.assertEqual(out, [])
+
+    def test_alias_match_does_not_suppress_unrelated_findings(self):
+        findings = [
+            self._finding(
+                "pip-audit", "GHSA-aaaa-bbbb-cccc",
+                category="dependency", aliases=["CVE-2026-11111"],
+            ),
+        ]
+        ignore_map = {"pip_audit": ["CVE-2026-99999"]}  # different CVE
+        out = filter_ignored(findings, ignore_map)
+        self.assertEqual(out, findings)
+
+    def test_matches_via_file_line_location_when_rule_id_is_not_unique(self):
+        # radon's rule_id is always "CC" for every complexity finding
+        # regardless of function/file -- rule_id-only matching can't waive
+        # one specific finding without waiving all of them. A "path:line"
+        # entry in the same ignore list must match by location instead.
+        findings = [
+            self._finding("radon", "CC", category="complexity",
+                           file="qa_agent/agent.py", line=116),
+            self._finding("radon", "CC", category="complexity",
+                           file="qa_agent/pr_reporter.py", line=146),
+        ]
+        ignore_map = {"radon": ["qa_agent/agent.py:116"]}
+        out = filter_ignored(findings, ignore_map)
+        # Only the matching-location finding is removed; the other CC
+        # finding (same rule_id, different location) must survive.
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0].file, "qa_agent/pr_reporter.py")
+
+    def test_location_entry_does_not_collide_with_rule_id_matching(self):
+        findings = [self._finding("bandit", "B101", file="app.py", line=1)]
+        # A location string that happens to share a list with a rule_id --
+        # must not accidentally suppress an unrelated rule_id-only finding.
+        ignore_map = {"bandit": ["other/file.py:99"]}
         out = filter_ignored(findings, ignore_map)
         self.assertEqual(out, findings)
 

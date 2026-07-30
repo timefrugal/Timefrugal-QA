@@ -17,7 +17,6 @@ permissions:
   contents: read
   pull-requests: write
   statuses: write
-  models: read
 
 concurrency:
   group: timefrugal-qa-${{ github.ref }}
@@ -75,6 +74,9 @@ jobs:
       - name: Run Timefrugal-QA
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+          MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_SHA: ${{ github.sha }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
