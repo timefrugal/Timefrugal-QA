@@ -1,11 +1,14 @@
 """
-AI-powered code review using Groq (free tier).
-Uses Groq's OpenAI-compatible endpoint at api.groq.com/openai/v1
-with GROQ_API_KEY — no extra billing. (GitHub Models, the previous
-backend, was fully retired by GitHub on 2026-07-30.)
+AI-powered code review using a chain of free-tier providers (Groq first,
+then Cerebras, in config.AI_PROVIDERS order) — no extra billing on any of
+them. Providers are tried in order; a provider that's out of quota, down,
+or simply not configured (missing API key) is skipped in favor of the
+next one, so a single provider running out doesn't take the whole AI
+review down. (GitHub Models, the original backend, was fully retired by
+GitHub on 2026-07-30.)
 """
 import json
-import os
+import sys
 import time
 from dataclasses import dataclass, field
 from typing import Callable, List, Optional, TypeVar
@@ -191,21 +194,46 @@ def _call_with_retry(fn: Callable[[], _T]) -> _T:
 
 
 # ──────────────────────────────────────────────
-# Client factory
+# Provider chain (Groq -> Cerebras -> ...), with automatic fallback
 # ──────────────────────────────────────────────
 
-def _get_client() -> OpenAI:
-    token = config.GROQ_API_KEY
-    if not token:
+def _configured_providers() -> List[dict]:
+    """config.AI_PROVIDERS entries that actually have an API key set, in
+    configured (priority) order. A provider a consumer repo hasn't added a
+    secret for yet is silently skipped, not an error -- same posture as
+    "falls closed with a clear message" only once ALL providers lack keys."""
+    return [p for p in config.AI_PROVIDERS if p.get("api_key")]
+
+
+def _call_with_fallback(make_request: Callable[[OpenAI, str], _T]) -> _T:
+    """Try each configured provider in order. Each provider still gets
+    config.AI_RETRY_MAX_ATTEMPTS retries for its own transient/rate-limit
+    errors (via _call_with_retry) before this moves on to the next
+    provider -- so a single 429 doesn't burn a fallback hop, only a
+    provider that's still failing after its own retries does. Raises the
+    last provider's exception if every provider fails, so callers' existing
+    except-Exception handling around the whole call is unchanged."""
+    providers = _configured_providers()
+    if not providers:
         raise ValueError(
-            "GROQ_API_KEY environment variable not set. "
-            "Required to access Groq's free AI tier for code review "
-            "(GitHub Models, the previous backend, was retired 2026-07-30)."
+            "No AI provider configured. Set at least one of: "
+            + ", ".join(f"{p['name'].upper()}_API_KEY" for p in config.AI_PROVIDERS)
+            + " (GitHub Models, the original backend, was retired 2026-07-30)."
         )
-    return OpenAI(
-        base_url=config.AI_BASE_URL,
-        api_key=token,
-    )
+    last_error: Optional[Exception] = None
+    for i, provider in enumerate(providers):
+        client = OpenAI(base_url=provider["base_url"], api_key=provider["api_key"])
+        try:
+            return _call_with_retry(lambda: make_request(client, provider["model"]))
+        except Exception as e:  # pylint: disable=broad-except
+            last_error = e
+            remaining = [p["name"] for p in providers[i + 1:]]
+            print(
+                f"[agent] {provider['name']} AI call failed ({e}); "
+                + (f"falling back to {remaining[0]}..." if remaining else "no more providers configured."),
+                file=sys.stderr,
+            )
+    raise last_error  # pylint: disable=raising-bad-type
 
 
 # ──────────────────────────────────────────────
@@ -220,19 +248,14 @@ def review_code(
     repo_config: Optional[RepoConfig] = None,
 ) -> AIReview:
     """
-    Send changed file contents + static analysis findings to Groq AI.
+    Send changed file contents + static analysis findings to the configured
+    AI provider chain (Groq, then Cerebras, in config.AI_PROVIDERS order).
     Returns structured AIReview.
     """
     review = AIReview(ai_blocking=bool(repo_config.ai_blocking) if repo_config else False)
 
     if not file_contents:
         review.errors.append("No file contents provided for AI review.")
-        return review
-
-    try:
-        client = _get_client()
-    except ValueError as e:
-        review.errors.append(str(e))
         return review
 
     # Build the user message
@@ -257,8 +280,8 @@ Please perform a thorough code review of the changed files above.
 """
 
     try:
-        response = _call_with_retry(lambda: client.chat.completions.create(
-            model=config.AI_MODEL,
+        response = _call_with_fallback(lambda client, model: client.chat.completions.create(
+            model=model,
             messages=[
                 {"role": "system", "content": _get_review_prompt(language)},
                 {"role": "user", "content": user_msg},
@@ -277,8 +300,11 @@ Please perform a thorough code review of the changed files above.
     except json.JSONDecodeError as e:
         review.errors.append(f"AI response was not valid JSON: {e}")
         return review
+    except ValueError as e:
+        review.errors.append(str(e))
+        return review
     except Exception as e:
-        review.errors.append(f"Groq API error: {e}")
+        review.errors.append(f"AI provider error (all configured providers failed): {e}")
         return review
 
     review.summary = data.get("summary", "")
@@ -309,11 +335,6 @@ def generate_tests(
     if not file_contents or language == "html":
         return ""
 
-    try:
-        client = _get_client()
-    except ValueError as e:
-        return f"# Error: {e}\n"
-
     fence = _LANG_FENCE.get(language, language)
     per_file_cap = _per_file_char_budget(len(file_contents), per_file_cap=5000)
     code_sections = []
@@ -339,8 +360,8 @@ def generate_tests(
     user_msg += "\nGenerate new comprehensive pytest test cases for the source code above."
 
     try:
-        response = _call_with_retry(lambda: client.chat.completions.create(
-            model=config.AI_MODEL,
+        response = _call_with_fallback(lambda client, model: client.chat.completions.create(
+            model=model,
             messages=[
                 {"role": "system", "content": _get_test_prompt(language)},
                 {"role": "user", "content": user_msg},

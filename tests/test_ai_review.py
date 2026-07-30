@@ -7,7 +7,7 @@ following the convention established in tests/test_repo_config.py.
 import unittest
 from unittest import mock
 
-from qa_agent import config
+from qa_agent import ai_review, config
 from qa_agent.ai_review import _per_file_char_budget, _validate_severity
 
 
@@ -84,6 +84,114 @@ class TestPerFileCharBudgetKeepsTotalPromptSizeBounded(unittest.TestCase):
         # Defensive: review_code/generate_tests both bail out earlier on
         # empty file_contents, but this must not raise (division by zero).
         self.assertEqual(_per_file_char_budget(0, per_file_cap=6000), 6000)
+
+
+def _fake_provider(name, api_key="key-set", model=None):
+    return {
+        "name": name,
+        "base_url": f"https://{name}.example/v1",
+        "api_key": api_key,
+        "model": model or f"{name}-model",
+    }
+
+
+class TestConfiguredProvidersFiltersByApiKeyPresence(unittest.TestCase):
+    def test_providers_without_api_key_are_excluded(self):
+        providers = [
+            _fake_provider("groq"),
+            _fake_provider("cerebras", api_key=""),
+            _fake_provider("mistral"),
+        ]
+        with mock.patch.object(config, "AI_PROVIDERS", providers):
+            configured = ai_review._configured_providers()
+        self.assertEqual([p["name"] for p in configured], ["groq", "mistral"])
+
+    def test_all_missing_keys_returns_empty_list(self):
+        providers = [_fake_provider("groq", api_key=""), _fake_provider("cerebras", api_key="")]
+        with mock.patch.object(config, "AI_PROVIDERS", providers):
+            self.assertEqual(ai_review._configured_providers(), [])
+
+
+class TestCallWithFallback(unittest.TestCase):
+    """
+    Regression coverage: a single free-tier provider running out of quota
+    (Groq's 12K TPM, hit by this very PR's diff) must not take the whole AI
+    review down when another configured provider could serve the request.
+    """
+
+    def test_first_provider_success_does_not_touch_the_next(self):
+        providers = [_fake_provider("groq"), _fake_provider("cerebras")]
+        calls = []
+
+        def make_request(client, model):
+            calls.append(model)
+            return "ok"
+
+        with mock.patch.object(config, "AI_PROVIDERS", providers):
+            result = ai_review._call_with_fallback(make_request)
+
+        self.assertEqual(result, "ok")
+        self.assertEqual(calls, ["groq-model"])  # cerebras never invoked
+
+    def test_falls_back_to_next_provider_on_failure(self):
+        providers = [_fake_provider("groq"), _fake_provider("cerebras")]
+        calls = []
+
+        def make_request(client, model):
+            calls.append(model)
+            if model == "groq-model":
+                raise RuntimeError("groq out of quota")
+            return "cerebras result"
+
+        with mock.patch.object(config, "AI_PROVIDERS", providers):
+            result = ai_review._call_with_fallback(make_request)
+
+        self.assertEqual(result, "cerebras result")
+        self.assertEqual(calls, ["groq-model", "cerebras-model"])
+
+    def test_falls_through_an_unconfigured_middle_provider(self):
+        providers = [
+            _fake_provider("groq"),
+            _fake_provider("cerebras", api_key=""),  # no key -- must be skipped, not tried
+            _fake_provider("mistral"),
+        ]
+        calls = []
+
+        def make_request(client, model):
+            calls.append(model)
+            if model == "groq-model":
+                raise RuntimeError("groq out of quota")
+            return "mistral result"
+
+        with mock.patch.object(config, "AI_PROVIDERS", providers):
+            result = ai_review._call_with_fallback(make_request)
+
+        self.assertEqual(result, "mistral result")
+        self.assertEqual(calls, ["groq-model", "mistral-model"])  # cerebras skipped entirely
+
+    def test_raises_last_providers_error_when_all_fail(self):
+        providers = [_fake_provider("groq"), _fake_provider("cerebras")]
+
+        def make_request(client, model):
+            if model == "groq-model":
+                raise RuntimeError("groq failure")
+            raise RuntimeError("cerebras failure")
+
+        with mock.patch.object(config, "AI_PROVIDERS", providers):
+            with self.assertRaises(RuntimeError) as ctx:
+                ai_review._call_with_fallback(make_request)
+
+        self.assertEqual(str(ctx.exception), "cerebras failure")
+
+    def test_raises_clear_error_when_no_providers_configured(self):
+        providers = [_fake_provider("groq", api_key=""), _fake_provider("cerebras", api_key="")]
+
+        with mock.patch.object(config, "AI_PROVIDERS", providers):
+            with self.assertRaises(ValueError) as ctx:
+                ai_review._call_with_fallback(lambda client, model: "unreachable")
+
+        self.assertIn("GROQ_API_KEY", str(ctx.exception))
+        self.assertIn("CEREBRAS_API_KEY", str(ctx.exception))
 
 
 if __name__ == "__main__":

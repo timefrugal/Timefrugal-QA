@@ -2,7 +2,7 @@
 
 AI-powered QA agent for **Python, Java, and HTML** repositories. Runs as a GitHub Actions reusable workflow **and** locally before raising a PR — catching issues early to minimize GitHub Actions usage and avoid PR iteration loops.
 
-**Cost: $0.** Uses [Groq](https://console.groq.com) (free-tier AI) and open-source analysis tools only. (Previously used GitHub Models, which GitHub fully retired 2026-07-30.)
+**Cost: $0.** Uses a chain of free-tier AI providers (Groq → Cerebras → Mistral — see below) and open-source analysis tools only. (Previously used GitHub Models, which GitHub fully retired 2026-07-30.)
 
 ---
 
@@ -12,7 +12,7 @@ On every pull request (and optionally before raising one locally), the agent:
 
 1. **Language detection** — automatically detects whether changed files are Python, Java, or HTML and selects the appropriate toolchain
 2. **Static analysis** — runs the right tools per language: bandit/pylint/mypy/radon/pip-audit for Python; PMD for Java; htmlhint for HTML; semgrep runs on all three
-3. **AI code review** — sends the diff + static findings to Groq (`llama-3.3-70b-versatile`) with a language-specific prompt; reviews for bugs, security vulnerabilities, architecture/design issues, and performance
+3. **AI code review** — sends the diff + static findings to the first configured AI provider (Groq, then Cerebras, then Mistral, falling back automatically if one is out of quota) with a language-specific prompt; reviews for bugs, security vulnerabilities, architecture/design issues, and performance
 4. **Test generation** — generates pytest tests for Python, JUnit 5 tests for Java (HTML skips — not applicable)
 4. **Reports** — posts a structured review comment on the PR, sets a commit status check (blocks merge if critical/high issues are found), and writes a formatted summary to the GitHub Actions step summary UI
 
@@ -104,7 +104,7 @@ python -m qa_agent [options]
 | `--base <ref>` | Diff against a different branch or commit (e.g. `--base develop`) |
 | `--no-tests` | Skip AI test case generation |
 | `--commit-tests` | Write generated tests to `tests/` and commit them (local mode only) |
-| `--model <id>` | Override the Groq AI model (e.g. `--model llama-3.1-8b-instant`) |
+| `--model <id>` | Override the AI model for whichever provider ends up handling the request (e.g. `--model llama-3.1-8b-instant`) |
 | `--ci` | CI mode — posts PR comment and sets commit status instead of terminal output |
 | `--pr <number>` | PR number, used with `--ci` (set automatically in GitHub Actions) |
 | `--root <path>` | Project root directory (default: current directory) |
@@ -137,16 +137,28 @@ pip install pre-commit
 pre-commit install
 ```
 
-`GROQ_API_KEY` must be set in your environment for the AI review to run.
+At least one of `GROQ_API_KEY` / `CEREBRAS_API_KEY` / `MISTRAL_API_KEY` must be set in your environment for the AI review to run.
 
 ---
+
+## AI provider chain
+
+AI review tries providers in order — Groq first, then Cerebras, then Mistral — falling back automatically to the next one if a provider is out of quota, down, or simply not configured. You only need **one** key to get AI review working; adding more just buys headroom against any single free tier's rate limits (this is exactly what happened during development: a single PR's diff hit Groq's 12K TPM ceiling outright).
+
+| Provider | Free tier | Get a key |
+|----------|-----------|-----------|
+| [Groq](https://console.groq.com) | `llama-3.3-70b-versatile`, 12K TPM | [console.groq.com/keys](https://console.groq.com/keys) |
+| [Cerebras](https://cloud.cerebras.ai) | `gpt-oss-120b`, 30K TPM, 1M TPD | [cloud.cerebras.ai](https://cloud.cerebras.ai) — free credits require adding a payment method on Cerebras' side, worth knowing before signing up |
+| [Mistral](https://console.mistral.ai) | `mistral-small-latest` ("Experiment" tier) | [console.mistral.ai](https://console.mistral.ai) — the free Experiment tier requires opting into data training on your inputs to unlock its full quota |
+
+A provider whose key isn't set is silently skipped, not an error — only having zero configured providers fails closed with a clear message.
 
 ## Token/key requirements
 
 | Context | Required |
 |---------|----------------|
-| GitHub Actions (CI) | `GITHUB_TOKEN` is automatically provided for PR comments/commit status — no setup needed. `GROQ_API_KEY` must be added as a repo secret for the AI review step (see Step 2b-equivalent: add it under Settings → Secrets → Actions) |
-| Local runner | `GROQ_API_KEY` — free at [console.groq.com/keys](https://console.groq.com/keys) |
+| GitHub Actions (CI) | `GITHUB_TOKEN` is automatically provided for PR comments/commit status — no setup needed. At least one AI provider key must be added as a repo secret for the AI review step (see Step 2b-equivalent: add it under Settings → Secrets → Actions) |
+| Local runner | At least one AI provider key (see table above) |
 | setup_all_repos.sh / setup_new_repo.sh | Personal access token with `repo` scope (classic) or fine-grained token with Contents read/write |
 | auto-setup.yml (scheduled) | Fine-grained PAT stored as `GH_PAT` secret — Contents read/write across all repos |
 
@@ -158,14 +170,16 @@ All config is via environment variables:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `QA_AI_MODEL` | `llama-3.3-70b-versatile` | Groq AI model |
+| `QA_AI_MODEL` | `llama-3.3-70b-versatile` | Groq model (first provider in the chain) |
+| `QA_AI_MODEL_CEREBRAS` | `gpt-oss-120b` | Cerebras model (fallback) |
+| `QA_AI_MODEL_MISTRAL` | `mistral-small-latest` | Mistral model (fallback) |
 | `QA_AI_MAX_TOKENS` | `3000` | Max tokens per AI response |
-| `QA_AI_RETRY_MAX_ATTEMPTS` | `3` | Retries on Groq rate-limit (HTTP 429) |
+| `QA_AI_RETRY_MAX_ATTEMPTS` | `3` | Retries on rate-limit (HTTP 429), per provider, before falling back to the next one |
 | `QA_AI_RETRY_BASE_DELAY` | `5.0` | Base delay in seconds between retries (doubles each attempt) |
 | `QA_MAX_COMPLEXITY` | `10` | Cyclomatic complexity threshold |
 | `QA_REPORT_FILE` | `qa_report.md` | Local report output path |
 
-To use a different (still free) Groq model, set `QA_AI_MODEL` — see [console.groq.com](https://console.groq.com/docs/models) for current options.
+To use a different (still free) model for any provider, set the matching `QA_AI_MODEL`/`QA_AI_MODEL_CEREBRAS`/`QA_AI_MODEL_MISTRAL` env var — see each provider's own docs for current model catalogs.
 
 ---
 
@@ -187,7 +201,7 @@ PMD and htmlhint degrade gracefully if not installed — the agent logs a warnin
 
 | Tool | Language | Purpose |
 |------|----------|---------|
-| [Groq](https://console.groq.com) | All | Free AI (`llama-3.3-70b-versatile`) — code review and test generation |
+| [Groq](https://console.groq.com) / [Cerebras](https://cloud.cerebras.ai) / [Mistral](https://console.mistral.ai) | All | Free AI provider chain, automatic fallback — code review and test generation |
 | [semgrep](https://semgrep.dev) | All | SAST — free community rules + bundled custom rules |
 | [bandit](https://bandit.readthedocs.io) | Python | Security linter |
 | [pylint](https://pylint.org) | Python | Code quality and bug detection |
