@@ -24,6 +24,15 @@ AI_MODEL = os.getenv("QA_AI_MODEL", "llama-3.3-70b-versatile")
 # Max tokens for AI responses (keep low to stay within free rate limits)
 AI_MAX_TOKENS = int(os.getenv("QA_AI_MAX_TOKENS", "3000"))
 
+# Total character budget for changed-file content in a single AI request,
+# spread across however many files changed. A fixed per-file cap (the old
+# behavior) scales unboundedly with file count -- a 9-file PR could request
+# ~15,500 tokens against Groq's free-tier 12,000 TPM limit and 413 outright.
+# review_code() and generate_tests() run concurrently (agent.py's
+# ThreadPoolExecutor) and share the same per-org TPM budget within the same
+# minute, so this is deliberately conservative for a single call.
+AI_MAX_TOTAL_CONTENT_CHARS = int(os.getenv("QA_AI_MAX_TOTAL_CONTENT_CHARS", "16000"))
+
 # Retry settings for rate-limit errors (HTTP 429)
 AI_RETRY_MAX_ATTEMPTS = int(os.getenv("QA_AI_RETRY_MAX_ATTEMPTS", "3"))
 AI_RETRY_BASE_DELAY = float(os.getenv("QA_AI_RETRY_BASE_DELAY", "5.0"))  # seconds; doubles each attempt

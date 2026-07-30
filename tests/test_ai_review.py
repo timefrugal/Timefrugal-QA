@@ -5,9 +5,10 @@ Uses stdlib unittest (no pytest / test framework is set up in this repo yet),
 following the convention established in tests/test_repo_config.py.
 """
 import unittest
+from unittest import mock
 
 from qa_agent import config
-from qa_agent.ai_review import _validate_severity
+from qa_agent.ai_review import _per_file_char_budget, _validate_severity
 
 
 class TestValidateSeverityRejectsInvalidAndMissingValues(unittest.TestCase):
@@ -48,6 +49,41 @@ class TestValidateSeverityRejectsInvalidAndMissingValues(unittest.TestCase):
 
     def test_surrounding_whitespace_is_stripped_on_valid_value(self):
         self.assertEqual(_validate_severity("  HIGH  "), "HIGH")
+
+
+class TestPerFileCharBudgetKeepsTotalPromptSizeBounded(unittest.TestCase):
+    """
+    Regression coverage: a fixed per-file truncation cap scales unboundedly
+    with file count -- a 9-file PR requested ~15,500 tokens against Groq's
+    free-tier 12,000 TPM limit and got a 413. _per_file_char_budget spreads
+    a total character budget (config.AI_MAX_TOTAL_CONTENT_CHARS) across
+    however many files changed, so total prompt size stays roughly bounded
+    regardless of file count.
+    """
+
+    def test_few_files_keeps_original_per_file_cap(self):
+        # 1-2 files: well under the total budget, so the original fixed cap
+        # (matches prior single-file behavior) should win, not the split.
+        with mock.patch.object(config, "AI_MAX_TOTAL_CONTENT_CHARS", 16000):
+            self.assertEqual(_per_file_char_budget(1, per_file_cap=6000), 6000)
+            self.assertEqual(_per_file_char_budget(2, per_file_cap=6000), 6000)
+
+    def test_many_files_splits_budget_and_stays_bounded(self):
+        with mock.patch.object(config, "AI_MAX_TOTAL_CONTENT_CHARS", 16000):
+            budget = _per_file_char_budget(9, per_file_cap=6000)
+            self.assertLess(budget, 6000)
+            # Total across all files must not exceed the configured budget.
+            self.assertLessEqual(budget * 9, 16000)
+
+    def test_very_many_files_never_goes_below_floor(self):
+        with mock.patch.object(config, "AI_MAX_TOTAL_CONTENT_CHARS", 16000):
+            budget = _per_file_char_budget(500, per_file_cap=6000, floor=500)
+            self.assertEqual(budget, 500)
+
+    def test_zero_files_returns_the_cap_unchanged(self):
+        # Defensive: review_code/generate_tests both bail out earlier on
+        # empty file_contents, but this must not raise (division by zero).
+        self.assertEqual(_per_file_char_budget(0, per_file_cap=6000), 6000)
 
 
 if __name__ == "__main__":

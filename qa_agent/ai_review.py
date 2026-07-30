@@ -160,6 +160,16 @@ def _get_test_prompt(language: str) -> str:
 _LANG_FENCE: dict[str, str] = {"python": "python", "java": "java", "html": "html"}
 
 
+def _per_file_char_budget(file_count: int, per_file_cap: int, floor: int = 500) -> int:
+    """Split AI_MAX_TOTAL_CONTENT_CHARS across `file_count` files, never
+    exceeding `per_file_cap` for a small file count (matches prior
+    single-file behavior) and never going below `floor` so a very large
+    file count doesn't degrade every file to near-zero content."""
+    if file_count <= 0:
+        return per_file_cap
+    return max(floor, min(per_file_cap, config.AI_MAX_TOTAL_CONTENT_CHARS // file_count))
+
+
 # ──────────────────────────────────────────────
 # Retry helper
 # ──────────────────────────────────────────────
@@ -227,9 +237,10 @@ def review_code(
 
     # Build the user message
     fence = _LANG_FENCE.get(language, language)
+    per_file_cap = _per_file_char_budget(len(file_contents), per_file_cap=6000)
     code_sections = []
     for filepath, content in file_contents.items():
-        truncated = content[:6000] + ("\n... [truncated]" if len(content) > 6000 else "")
+        truncated = content[:per_file_cap] + ("\n... [truncated]" if len(content) > per_file_cap else "")
         code_sections.append(f"### File: {filepath}\n```{fence}\n{truncated}\n```")
 
     static_summary = _format_static_for_ai(static_results)
@@ -304,15 +315,17 @@ def generate_tests(
         return f"# Error: {e}\n"
 
     fence = _LANG_FENCE.get(language, language)
+    per_file_cap = _per_file_char_budget(len(file_contents), per_file_cap=5000)
     code_sections = []
     for filepath, content in file_contents.items():
-        truncated = content[:5000] + ("\n... [truncated]" if len(content) > 5000 else "")
+        truncated = content[:per_file_cap] + ("\n... [truncated]" if len(content) > per_file_cap else "")
         code_sections.append(f"### Source: {filepath}\n```{fence}\n{truncated}\n```")
 
     existing_sections = []
     if existing_test_files:
+        per_existing_cap = _per_file_char_budget(len(existing_test_files), per_file_cap=2000, floor=200)
         for filepath, content in existing_test_files.items():
-            truncated = content[:2000] + ("\n... [truncated]" if len(content) > 2000 else "")
+            truncated = content[:per_existing_cap] + ("\n... [truncated]" if len(content) > per_existing_cap else "")
             existing_sections.append(
                 f"### Existing tests: {filepath}\n```python\n{truncated}\n```"
             )
