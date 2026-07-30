@@ -40,6 +40,7 @@ class Finding:
     message: str
     rule_id: str = ""
     context: str = ""      # surrounding code snippet (optional)
+    aliases: List[str] = field(default_factory=list)  # alternate advisory IDs (e.g. pip-audit's OSV `id` is often a GHSA-* id, with the CVE only listed as an alias)
 
 
 @dataclass
@@ -383,6 +384,7 @@ def run_pip_audit(project_root: str = ".") -> AnalysisResults:
                     f"(Fix: {', '.join(vuln.get('fix_versions', ['none']))})"
                 ),
                 rule_id=vuln.get("id", ""),
+                aliases=list(vuln.get("aliases", []) or []),
             ))
 
     return results

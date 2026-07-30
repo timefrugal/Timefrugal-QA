@@ -113,8 +113,15 @@ def load_repo_config(project_root: str) -> RepoConfig:
 
 
 def filter_ignored(findings: List, ignore_map: Dict) -> List:
-    """Remove findings whose (tool, rule_id) appears in ignore_map. tool names
-    are normalized (hyphens -> underscores) to match YAML keys like pip_audit."""
+    """Remove findings whose (tool, rule_id) -- OR any of the finding's known
+    aliases -- appears in ignore_map. tool names are normalized (hyphens ->
+    underscores) to match YAML keys like pip_audit.
+
+    Alias matching matters for pip-audit specifically: its OSV-based `id` is
+    frequently a GHSA-* identifier, with the CVE number only present in
+    `aliases`. A waiver list written against CVE IDs (the natural thing to
+    write, since that's what most vulnerability descriptions lead with)
+    would otherwise never match and silently never take effect."""
     if not ignore_map or not isinstance(ignore_map, dict):
         return findings
     out = []
@@ -131,7 +138,8 @@ def filter_ignored(findings: List, ignore_map: Dict) -> List:
                 )
                 warned_tool_keys.add(tool_key)
             ignored_ids = []
-        if f.rule_id in ignored_ids:
+        finding_ids = {f.rule_id, *getattr(f, "aliases", [])}
+        if finding_ids & set(ignored_ids):
             continue
         out.append(f)
     return out

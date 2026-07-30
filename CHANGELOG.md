@@ -17,8 +17,12 @@ Versions follow [Semantic Versioning](https://semver.org/).
 - **Doc/reality mismatch** — `CLAUDE.md`'s "Architecture decisions" section claimed target repos have "a tiny 15-line caller workflow" and that "all agent improvements auto-apply to every repo." Corrected to describe what actually ships: `qa_agent`'s Python logic auto-updates for consumers via the `@v1` pip install pin, but the workflow YAML (`templates/repo_workflow.yml`) is a one-time install-time copy that `auto-setup.yml`'s skip-if-exists check does not refresh later. `README.md` updated to match.
 - **Local/CI parity visibility** — `local_reporter.print_report()` now prints an explicit warning when one or more analysis tools failed to run locally, pointing at the Tool Warnings block above it, so a local PASS with tool failures isn't mistaken for a guaranteed CI PASS (CI treats the same tool failures as a distinct `errored` state that fails the check).
 
+### Fixed
+- **`.timefrugal-qa.yml` pip-audit waivers silently never matched CVE-based entries** — found while validating the Groq switch above: this repo's own waiver list (3 `mcp` CVEs, investigated and accepted as unreachable) was still showing up as blocking on every run. Root cause: pip-audit's OSV-based `id` field is frequently a GHSA-* identifier, with the CVE number present only in a separate `aliases` array that `Finding` never captured — so a waiver written against the CVE (the natural thing to write, since that's what advisory descriptions lead with) never matched `rule_id` and silently never took effect. `Finding` now carries `aliases`, `run_pip_audit` populates it from pip-audit's own output, and `filter_ignored` matches against `rule_id` OR any alias. Affects every consumer repo using CVE-based pip-audit waivers, not just this repo's own.
+
 ### Added
 - 5 regression tests: pip-audit command scoping to the target project, AI review severity validation/fallback, commit-status `blocked`-over-`errored` precedence, agent exit-code precedence, and `run_all`'s error-isolation-without-dropping-findings behavior.
+- 4 more regression tests for this round: `run_pip_audit` capturing `aliases` from tool output (present and absent cases), and `filter_ignored` matching a waiver via alias (both the positive match and confirming it doesn't over-match unrelated CVEs).
 
 ---
 

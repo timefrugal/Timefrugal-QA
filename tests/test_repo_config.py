@@ -280,7 +280,7 @@ ignore: "bogus"
 
 
 class TestFilterIgnored(unittest.TestCase):
-    def _finding(self, tool, rule_id, severity="HIGH", category="security"):
+    def _finding(self, tool, rule_id, severity="HIGH", category="security", aliases=None):
         return Finding(
             tool=tool,
             severity=severity,
@@ -289,6 +289,7 @@ class TestFilterIgnored(unittest.TestCase):
             line=1,
             message="msg",
             rule_id=rule_id,
+            aliases=aliases or [],
         )
 
     def test_removes_matching_tool_and_rule_id(self):
@@ -336,6 +337,31 @@ class TestFilterIgnored(unittest.TestCase):
             self._finding("pylint", "B101"),  # same rule_id, different tool
         ]
         ignore_map = {"bandit": ["B101"]}
+        out = filter_ignored(findings, ignore_map)
+        self.assertEqual(out, findings)
+
+    def test_matches_via_alias_when_waiver_written_against_cve_not_primary_id(self):
+        # pip-audit's OSV `id` is often GHSA-*, with the CVE only in aliases.
+        # A waiver written against the CVE (the natural thing, since that's
+        # what advisory descriptions lead with) must still match.
+        findings = [
+            self._finding(
+                "pip-audit", "GHSA-x5r2-r74c-3w28",
+                category="dependency", aliases=["CVE-2026-52870"],
+            ),
+        ]
+        ignore_map = {"pip_audit": ["CVE-2026-52870"]}
+        out = filter_ignored(findings, ignore_map)
+        self.assertEqual(out, [])
+
+    def test_alias_match_does_not_suppress_unrelated_findings(self):
+        findings = [
+            self._finding(
+                "pip-audit", "GHSA-aaaa-bbbb-cccc",
+                category="dependency", aliases=["CVE-2026-11111"],
+            ),
+        ]
+        ignore_map = {"pip_audit": ["CVE-2026-99999"]}  # different CVE
         out = filter_ignored(findings, ignore_map)
         self.assertEqual(out, findings)
 
