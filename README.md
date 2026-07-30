@@ -273,7 +273,8 @@ This avoids multiple PR commits triggered by CI failures — each of which consu
 | LOW | Style issue, minor refactor suggestion | ❌ No |
 | INFO | Architecture note | ❌ No |
 
-To change the blocking threshold, edit `config.py`:
-```python
-BLOCK_MERGE_THRESHOLD = SEVERITY_MEDIUM   # stricter
+To change the blocking threshold, set it per-repo — **don't** edit `config.py` in this central repo, that would change it for every consumer. Either add to your repo's own `.timefrugal-qa.yml`:
+```yaml
+block_merge_threshold: MEDIUM   # stricter
 ```
+or set the `QA_BLOCK_MERGE_THRESHOLD` env var (same values: `CRITICAL`/`HIGH`/`MEDIUM`/`LOW`). The per-repo config takes precedence over the env var, which takes precedence over the built-in default (`HIGH`).
