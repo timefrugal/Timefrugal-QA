@@ -43,7 +43,7 @@ Timefrugal-QA/
 
 ## Architecture decisions (don't change without reason)
 
-- **Free AI:** GitHub Models at `https://models.inference.ai.azure.com`, authenticated with `GITHUB_TOKEN` (no extra billing). Default model: `gpt-4o-mini`. Configurable via `QA_AI_MODEL` env var.
+- **Free AI:** GitHub Models at `https://models.github.ai/inference`, authenticated with `GITHUB_TOKEN` (no extra billing). Default model: `gpt-4o-mini`. Configurable via `QA_AI_MODEL` env var.
 - **Per-repo installable pattern:** Python logic lives in ONE repo (`qa_agent`), installed via `pip install git+...@v1` — auto-updates for consumers whenever they re-run their workflow (since the pin resolves at install time). The workflow YAML itself (`templates/repo_workflow.yml`) is copied into each target repo at install time and is NOT automatically refreshed later — `auto-setup.yml`'s skip-if-exists check means workflow-level changes require manually re-running `setup_all_repos.sh`/`setup_new_repo.sh` against already-installed repos.
 - **Blocking threshold:** CRITICAL + HIGH severity → blocks merge. MEDIUM/LOW → advisory. Controlled by `BLOCK_MERGE_THRESHOLD` in `config.py`.
 - **PR comment deduplication:** `pr_reporter.py` looks for an existing comment with the marker `<!-- timefrugal-qa-comment -->` and updates it rather than appending a new one on each push.

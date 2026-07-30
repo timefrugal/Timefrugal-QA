@@ -6,7 +6,7 @@ import os
 # ──────────────────────────────────────────────
 # GitHub Models (free AI — requires GITHUB_TOKEN)
 # ──────────────────────────────────────────────
-GITHUB_MODELS_BASE_URL = "https://models.inference.ai.azure.com"
+GITHUB_MODELS_BASE_URL = "https://models.github.ai/inference"
 
 # Default model: gpt-4o-mini is free, fast, and capable enough for code review.
 # Switch to "gpt-4o" for deeper analysis (still free, lower rate limit).

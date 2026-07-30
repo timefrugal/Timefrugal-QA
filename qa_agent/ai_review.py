@@ -1,6 +1,6 @@
 """
 AI-powered code review using GitHub Models (free).
-Uses the OpenAI-compatible endpoint at models.inference.ai.azure.com
+Uses the OpenAI-compatible endpoint at models.github.ai/inference
 with the user's GITHUB_TOKEN — no extra billing.
 """
 import json
