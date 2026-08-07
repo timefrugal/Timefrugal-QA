@@ -8,7 +8,9 @@ import unittest
 from unittest import mock
 
 from qa_agent import ai_review, config
-from qa_agent.ai_review import _per_file_char_budget, _validate_severity
+from qa_agent.ai_review import _get_review_prompt, _per_file_char_budget, _validate_severity
+from qa_agent.repo_config import RepoConfig
+from qa_agent.static_analysis import AnalysisResults
 
 
 class TestValidateSeverityRejectsInvalidAndMissingValues(unittest.TestCase):
@@ -49,6 +51,44 @@ class TestValidateSeverityRejectsInvalidAndMissingValues(unittest.TestCase):
 
     def test_surrounding_whitespace_is_stripped_on_valid_value(self):
         self.assertEqual(_validate_severity("  HIGH  "), "HIGH")
+
+
+class TestGetReviewPromptAppendsExtraInstructions(unittest.TestCase):
+    """
+    extra_instructions is an opt-in per-repo addition to the AI review's
+    system prompt (e.g. a repo that auto-deploys to a live production VM
+    asking the reviewer to weigh outage risk). It must be clearly delimited
+    and appended, not silently merged into the base prompt, and must leave
+    the base prompt byte-for-byte unchanged when absent -- so repos that
+    never opt in see zero behavior change.
+    """
+
+    def test_empty_extra_instructions_leaves_prompt_unchanged(self):
+        self.assertEqual(_get_review_prompt("python"), _get_review_prompt("python", ""))
+
+    def test_default_argument_matches_explicit_empty_string(self):
+        for language in ("python", "java", "html"):
+            self.assertEqual(_get_review_prompt(language), _get_review_prompt(language, ""))
+
+    def test_non_empty_extra_instructions_is_appended(self):
+        prompt = _get_review_prompt("python", "Weigh production-outage risk heavily.")
+        self.assertIn("Weigh production-outage risk heavily.", prompt)
+        # Still contains the full base prompt -- this is an addition, not a
+        # replacement.
+        self.assertIn("senior software engineer", prompt)
+
+    def test_extra_instructions_section_is_clearly_delimited(self):
+        prompt = _get_review_prompt("python", "Weigh production-outage risk heavily.")
+        self.assertIn(
+            "Additional repo-specific review focus (from this repo's "
+            ".timefrugal-qa.yml):",
+            prompt,
+        )
+
+    def test_unknown_language_still_appends_to_python_fallback_prompt(self):
+        prompt = _get_review_prompt("cobol", "Some guidance.")
+        self.assertIn("Some guidance.", prompt)
+        self.assertIn("senior software engineer", prompt)  # fell back to python prompt
 
 
 class TestPerFileCharBudgetKeepsTotalPromptSizeBounded(unittest.TestCase):
@@ -192,6 +232,66 @@ class TestCallWithFallback(unittest.TestCase):
 
         self.assertIn("GROQ_API_KEY", str(ctx.exception))
         self.assertIn("CEREBRAS_API_KEY", str(ctx.exception))
+
+
+class TestReviewCodePassesRepoConfigExtraInstructionsIntoSystemPrompt(unittest.TestCase):
+    """
+    review_code() must thread repo_config.extra_instructions through to the
+    system prompt actually sent to the AI provider -- not just to
+    _get_review_prompt() in isolation. Captures the real `messages` kwarg
+    passed to the (stubbed) provider call.
+    """
+
+    def _capture_system_prompt(self, repo_config):
+        captured = {}
+
+        class _FakeMessage:
+            content = '{"summary": "ok", "findings": []}'
+
+        class _FakeChoice:
+            message = _FakeMessage()
+
+        class _FakeResponse:
+            choices = [_FakeChoice()]
+
+        class _FakeCompletions:
+            def create(self, **kwargs):
+                captured["messages"] = kwargs["messages"]
+                return _FakeResponse()
+
+        class _FakeChat:
+            completions = _FakeCompletions()
+
+        class _FakeClient:
+            chat = _FakeChat()
+
+        def fake_call_with_fallback(make_request):
+            return make_request(_FakeClient(), "fake-model")
+
+        with mock.patch.object(ai_review, "_call_with_fallback", fake_call_with_fallback):
+            ai_review.review_code(
+                {"app.py": "print('hi')"},
+                AnalysisResults(),
+                repo_name="test-repo",
+                language="python",
+                repo_config=repo_config,
+            )
+        return captured["messages"][0]["content"]
+
+    def test_extra_instructions_present_in_sent_system_prompt(self):
+        repo_config = RepoConfig(extra_instructions="Weigh production-outage risk heavily.")
+        system_prompt = self._capture_system_prompt(repo_config)
+        self.assertIn("Weigh production-outage risk heavily.", system_prompt)
+
+    def test_repo_config_none_leaves_system_prompt_unchanged(self):
+        with_none = self._capture_system_prompt(None)
+        with_default = self._capture_system_prompt(RepoConfig())
+        self.assertEqual(with_none, with_default)
+        self.assertEqual(with_none, _get_review_prompt("python"))
+
+    def test_repo_config_with_empty_extra_instructions_leaves_prompt_unchanged(self):
+        system_prompt = self._capture_system_prompt(RepoConfig(extra_instructions=""))
+        self.assertEqual(system_prompt, _get_review_prompt("python"))
 
 
 if __name__ == "__main__":

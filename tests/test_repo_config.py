@@ -21,6 +21,7 @@ class TestLoadRepoConfigMissingFile(unittest.TestCase):
         self.assertIsNone(cfg.block_merge_threshold)
         self.assertEqual(cfg.severity_overrides, {})
         self.assertEqual(cfg.ignore, {})
+        self.assertEqual(cfg.extra_instructions, "")
 
 
 class TestLoadRepoConfigMalformedYaml(unittest.TestCase):
@@ -55,6 +56,7 @@ class TestLoadRepoConfigFullyPopulated(unittest.TestCase):
         yaml_text = """
 ai:
   blocking: true
+  extra_instructions: "Weigh production-availability risk heavily."
 block_merge_threshold: CRITICAL
 severity_overrides:
   pylint:
@@ -84,6 +86,7 @@ ignore:
             "bandit": ["B101", "B105"],
             "pip_audit": ["GHSA-xxxx-yyyy-zzzz"],
         })
+        self.assertEqual(cfg.extra_instructions, "Weigh production-availability risk heavily.")
 
     def test_partial_yaml_fills_remaining_fields_with_defaults(self):
         yaml_text = "ai:\n  blocking: true\n"
@@ -97,6 +100,7 @@ ignore:
         self.assertIsNone(cfg.block_merge_threshold)
         self.assertEqual(cfg.severity_overrides, {})
         self.assertEqual(cfg.ignore, {})
+        self.assertEqual(cfg.extra_instructions, "")
 
 
 class TestLoadRepoConfigMalformedFieldTypes(unittest.TestCase):
@@ -169,6 +173,48 @@ class TestLoadRepoConfigBlockMergeThreshold(unittest.TestCase):
     def test_absent_value_is_none(self):
         cfg = self._load("ai:\n  blocking: true\n")
         self.assertIsNone(cfg.block_merge_threshold)
+
+
+class TestLoadRepoConfigExtraInstructions(unittest.TestCase):
+    """Regression coverage for `ai.extra_instructions`: opt-in per-repo text
+    appended to the AI review's system prompt. Absent, wrong-typed, or
+    missing-parent values must all fall back to "" without raising -- same
+    posture as every other field in this file."""
+
+    def _load(self, yaml_text):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, ".timefrugal-qa.yml")
+            with open(path, "w") as f:
+                f.write(yaml_text)
+            return load_repo_config(tmpdir)
+
+    def test_valid_value_is_preserved(self):
+        cfg = self._load(
+            'ai:\n  extra_instructions: "Weigh production-outage risk heavily."\n'
+        )
+        self.assertEqual(cfg.extra_instructions, "Weigh production-outage risk heavily.")
+
+    def test_absent_ai_key_defaults_to_empty_string(self):
+        cfg = self._load("block_merge_threshold: HIGH\n")
+        self.assertEqual(cfg.extra_instructions, "")
+
+    def test_absent_extra_instructions_key_under_ai_defaults_to_empty_string(self):
+        cfg = self._load("ai:\n  blocking: true\n")
+        self.assertEqual(cfg.extra_instructions, "")
+
+    def test_wrong_type_list_falls_back_to_empty_string_without_raising(self):
+        cfg = self._load(
+            "ai:\n  extra_instructions:\n    - not\n    - a\n    - string\n"
+        )  # must not raise
+        self.assertEqual(cfg.extra_instructions, "")
+
+    def test_wrong_type_int_falls_back_to_empty_string_without_raising(self):
+        cfg = self._load("ai:\n  extra_instructions: 5\n")  # must not raise
+        self.assertEqual(cfg.extra_instructions, "")
+
+    def test_wrong_type_bool_falls_back_to_empty_string_without_raising(self):
+        cfg = self._load("ai:\n  extra_instructions: true\n")  # must not raise
+        self.assertEqual(cfg.extra_instructions, "")
 
 
 class TestLoadRepoConfigSeverityOverrideValues(unittest.TestCase):
@@ -253,6 +299,8 @@ ignore: "bogus"
 
         # ai_blocking: 'ai' isn't a mapping -> default False.
         self.assertFalse(cfg.ai_blocking)
+        # extra_instructions: 'ai' isn't a mapping -> default "".
+        self.assertEqual(cfg.extra_instructions, "")
         # block_merge_threshold: invalid -> None (use config.py's default).
         self.assertIsNone(cfg.block_merge_threshold)
         # severity_overrides: every leaf was invalid or non-mapping -> all
