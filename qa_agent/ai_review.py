@@ -152,8 +152,14 @@ Start with the package declaration if present, then imports.
 }
 
 
-def _get_review_prompt(language: str) -> str:
-    return _SYSTEM_PROMPTS.get(language, _SYSTEM_PROMPTS["python"])
+def _get_review_prompt(language: str, extra_instructions: str = "") -> str:
+    prompt = _SYSTEM_PROMPTS.get(language, _SYSTEM_PROMPTS["python"])
+    if extra_instructions:
+        prompt += (
+            "\nAdditional repo-specific review focus (from this repo's "
+            f".timefrugal-qa.yml):\n{extra_instructions}\n"
+        )
+    return prompt
 
 
 def _get_test_prompt(language: str) -> str:
@@ -287,7 +293,9 @@ Please perform a thorough code review of the changed files above.
         response = _call_with_fallback(lambda client, model: client.chat.completions.create(
             model=model,
             messages=[
-                {"role": "system", "content": _get_review_prompt(language)},
+                {"role": "system", "content": _get_review_prompt(
+                    language, repo_config.extra_instructions if repo_config else ""
+                )},
                 {"role": "user", "content": user_msg},
             ],
             max_tokens=config.AI_MAX_TOKENS,

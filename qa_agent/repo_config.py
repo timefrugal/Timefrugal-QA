@@ -28,6 +28,11 @@ class RepoConfig:
     block_merge_threshold: Optional[str] = None  # None = use config.py's default
     severity_overrides: Dict = field(default_factory=dict)  # {tool: {category: severity}}
     ignore: Dict = field(default_factory=dict)  # {tool: [rule_id, ...]}
+    # Opt-in per-repo text appended to the AI review's system prompt (e.g. a
+    # consuming repo asking the reviewer to weigh production-outage risk).
+    # Empty string means "no repo-specific guidance" -- the prompt is
+    # unchanged from today's behavior.
+    extra_instructions: str = ""
 
 
 def _as_mapping(value, field_name: str, path: str) -> dict:
@@ -41,6 +46,21 @@ def _as_mapping(value, field_name: str, path: str) -> dict:
         )
         return {}
     return value
+
+
+def _as_str(value, field_name: str, path: str) -> str:
+    """Return value if it's a string, else "" with a stderr warning. Used for
+    every YAML field that's expected to parse to a plain string."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    print(
+        f"[repo_config] {path}: '{field_name}' did not parse to a string"
+        " -- ignoring",
+        file=sys.stderr,
+    )
+    return ""
 
 
 def _as_severity(value, field_name: str, path: str) -> Optional[str]:
@@ -104,11 +124,13 @@ def load_repo_config(project_root: str) -> RepoConfig:
     block_merge_threshold = _as_severity(
         data.get("block_merge_threshold"), "block_merge_threshold", path
     )
+    extra_instructions = _as_str(ai.get("extra_instructions", ""), "ai.extra_instructions", path)
     return RepoConfig(
         ai_blocking=bool(ai.get("blocking", False)),
         block_merge_threshold=block_merge_threshold,
         severity_overrides=severity_overrides,
         ignore=ignore,
+        extra_instructions=extra_instructions,
     )
 
 
