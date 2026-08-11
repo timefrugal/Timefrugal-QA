@@ -1,11 +1,12 @@
 """
-AI-powered code review using a chain of free-tier providers (Groq first,
-then Cerebras, in config.AI_PROVIDERS order) — no extra billing on any of
-them. Providers are tried in order; a provider that's out of quota, down,
-or simply not configured (missing API key) is skipped in favor of the
-next one, so a single provider running out doesn't take the whole AI
-review down. (GitHub Models, the original backend, was fully retired by
-GitHub on 2026-07-30.)
+AI-powered code review using a chain of free-tier providers (Groq, then
+Cerebras, then Mistral, then an optional env-gated last-resort fallback --
+see config.AI_PROVIDERS for the authoritative order) — no extra billing on
+any of them. Providers are tried in order; a provider that's out of quota,
+down, returns unparseable content, or simply not configured (missing API
+key) is skipped in favor of the next one, so a single provider running out
+(or misbehaving) doesn't take the whole AI review down. (GitHub Models,
+the original backend, was fully retired by GitHub on 2026-07-30.)
 """
 import json
 import sys
@@ -226,7 +227,10 @@ def _call_with_fallback(make_request: Callable[[OpenAI, str], _T]) -> _T:
     if not providers:
         raise ValueError(
             "No AI provider configured. Set at least one of: "
-            + ", ".join(f"{p['name'].upper()}_API_KEY" for p in config.AI_PROVIDERS)
+            + ", ".join(
+                p.get("env_key", f"{p['name'].upper()}_API_KEY")
+                for p in config.AI_PROVIDERS
+            )
             + " (GitHub Models, the original backend, was retired 2026-07-30)."
         )
     last_error: Optional[Exception] = None
@@ -249,6 +253,33 @@ def _call_with_fallback(make_request: Callable[[OpenAI, str], _T]) -> _T:
     raise last_error
 
 
+def _parse_review_json(raw: Optional[str]) -> dict:
+    """Parse a provider's raw completion content as the review JSON schema
+    (stripping a markdown fence if the model wrapped its JSON in one).
+    Raises json.JSONDecodeError on unparseable content.
+
+    Deliberately called from INSIDE _call_with_fallback's per-provider
+    make_request callable (see review_code below), not after
+    _call_with_fallback returns. A provider that responds HTTP 200 with
+    garbage/unparseable content is a real, observed failure mode (Cerebras
+    did exactly this during a 2026-08-11 Groq-quota-exhaustion incident on
+    jarvis-infra, see jarvis-infra issue #200) -- at the transport level
+    that's a "success", so if parsing happened after the fallback loop
+    returned, the chain would never advance to the next provider (Mistral,
+    then any configured fourth fallback) even though the response was
+    useless. Raising here makes a garbage-but-200 response count as this
+    provider's failure, same as a network error or non-200 status, so
+    _call_with_fallback's existing except-Exception-and-advance logic
+    covers it for free.
+    """
+    text = (raw or "{}").strip()
+    if text.startswith("```"):
+        text = text.split("```")[1]
+        if text.startswith("json"):
+            text = text[4:]
+    return json.loads(text)
+
+
 # ──────────────────────────────────────────────
 # Review functions
 # ──────────────────────────────────────────────
@@ -262,8 +293,10 @@ def review_code(
 ) -> AIReview:
     """
     Send changed file contents + static analysis findings to the configured
-    AI provider chain (Groq, then Cerebras, in config.AI_PROVIDERS order).
-    Returns structured AIReview.
+    AI provider chain (config.AI_PROVIDERS order). A provider that responds
+    with unparseable JSON is treated the same as a transport failure and
+    the chain advances to the next configured provider -- see
+    _parse_review_json. Returns structured AIReview.
     """
     review = AIReview(ai_blocking=bool(repo_config.ai_blocking) if repo_config else False)
 
@@ -292,8 +325,8 @@ def review_code(
 Please perform a thorough code review of the changed files above.
 """
 
-    try:
-        response = _call_with_fallback(lambda client, model: client.chat.completions.create(
+    def _make_request(client: OpenAI, model: str) -> dict:
+        response = client.chat.completions.create(
             model=model,
             messages=[
                 {"role": "system", "content": _get_review_prompt(
@@ -303,19 +336,28 @@ Please perform a thorough code review of the changed files above.
             ],
             max_tokens=config.AI_MAX_TOKENS,
             temperature=0.1,
-        ))
+        )
         raw = response.choices[0].message.content or "{}"
-        # Strip markdown fences if model wraps JSON
-        raw = raw.strip()
-        if raw.startswith("```"):
-            raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:]
-        data = json.loads(raw)
+        # JSON parsing happens HERE, inside the per-provider attempt --
+        # see _parse_review_json's docstring for why this must not happen
+        # after _call_with_fallback returns.
+        return _parse_review_json(raw)
+
+    try:
+        data = _call_with_fallback(_make_request)
     except json.JSONDecodeError as e:
-        review.errors.append(f"AI response was not valid JSON: {e}")
+        # json.JSONDecodeError IS-A ValueError, so this must be caught
+        # BEFORE the bare ValueError branch below or it'd be swallowed by
+        # that generic message instead. Every configured provider was
+        # tried (parsing happens inside _make_request, i.e. inside
+        # _call_with_fallback's per-provider loop) and the LAST one's
+        # response still didn't parse -- _call_with_fallback re-raises the
+        # final provider's error once the whole chain is exhausted.
+        review.errors.append(f"No configured AI provider returned valid JSON (last error: {e})")
         return review
     except ValueError as e:
+        # No providers configured at all -- distinct from a parse/transport
+        # failure of a configured provider.
         review.errors.append(str(e))
         return review
     except Exception as e:

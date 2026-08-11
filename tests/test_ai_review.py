@@ -294,5 +294,208 @@ class TestReviewCodePassesRepoConfigExtraInstructionsIntoSystemPrompt(unittest.T
         self.assertEqual(system_prompt, _get_review_prompt("python"))
 
 
+def _fake_openai_client_factory(content_by_model: dict, calls: list):
+    """Builds a fake replacement for ai_review.OpenAI: `OpenAI(base_url=...,
+    api_key=...)` returns a client whose `.chat.completions.create(**kwargs)`
+    looks up `kwargs["model"]` in content_by_model and returns a response
+    object shaped like the real openai SDK's
+    (`response.choices[0].message.content`). Every call is recorded (by
+    model name) into `calls`, so tests can assert exactly which providers
+    were actually invoked -- not just what the final result was."""
+
+    class _FakeMessage:
+        def __init__(self, content):
+            self.content = content
+
+    class _FakeChoice:
+        def __init__(self, content):
+            self.message = _FakeMessage(content)
+
+    class _FakeResponse:
+        def __init__(self, content):
+            self.choices = [_FakeChoice(content)]
+
+    class _FakeCompletions:
+        def create(self, **kwargs):
+            model = kwargs["model"]
+            calls.append(model)
+            return _FakeResponse(content_by_model[model])
+
+    class _FakeChat:
+        completions = _FakeCompletions()
+
+    class _FakeClient:
+        chat = _FakeChat()
+
+    def _factory(base_url=None, api_key=None):  # pylint: disable=unused-argument
+        return _FakeClient()
+
+    return _factory
+
+
+class TestGarbageJsonFromEarlierProviderFallsThroughToNextProvider(unittest.TestCase):
+    """
+    Regression test for the 2026-08-11 incident (jarvis-infra issue #200):
+    Groq's org-wide daily quota was exhausted, Cerebras (the next provider
+    in the chain) responded HTTP 200 with content that didn't parse as
+    JSON, and the QA gate crashed outright instead of falling through to
+    Mistral -- because JSON parsing happened AFTER _call_with_fallback
+    returned, so a garbage-but-200 response counted as "success" at the
+    transport level and the chain never advanced.
+
+    This test goes through the REAL review_code() -> _call_with_fallback()
+    -> _parse_review_json() pipeline (only the OpenAI client itself is
+    faked, at the class ai_review.OpenAI is constructed from) -- it does
+    NOT re-implement or stub out the fallback/parsing logic under test, so
+    it actually exercises the fix rather than assuming it.
+
+    Mutation check performed manually while writing this test: reverting
+    the fix (moving JSON parsing back to after `_call_with_fallback`
+    returns, matching the pre-fix code) makes this test fail -- the first
+    (garbage) provider's response is accepted as a "successful" call, the
+    chain never reaches the second provider, `calls` ends up
+    `["groq-model"]` instead of `["groq-model", "cerebras-model"]`, and
+    review.errors is non-empty instead of empty.
+    """
+
+    def test_garbage_200_response_advances_to_next_provider(self):
+        providers = [_fake_provider("groq"), _fake_provider("cerebras")]
+        calls: list = []
+        content_by_model = {
+            "groq-model": "this is not JSON at all {{{ garbage",
+            "cerebras-model": '{"summary": "ok from cerebras", "architecture_notes": "", "findings": []}',
+        }
+
+        with mock.patch.object(config, "AI_PROVIDERS", providers), \
+                mock.patch.object(ai_review, "OpenAI", _fake_openai_client_factory(content_by_model, calls)):
+            review = ai_review.review_code(
+                {"app.py": "print('hi')"},
+                AnalysisResults(),
+                repo_name="test-repo",
+                language="python",
+            )
+
+        # Both providers were actually tried, in order -- proves real
+        # fallthrough happened, not just a lucky first-provider result.
+        self.assertEqual(calls, ["groq-model", "cerebras-model"])
+        self.assertEqual(review.errors, [])
+        self.assertEqual(review.summary, "ok from cerebras")
+
+    def test_garbage_200_from_every_provider_still_reports_a_clear_error(self):
+        # When even the LAST provider's response fails to parse, review_code
+        # must still fail closed with a clear error (not crash) -- this is
+        # the "all providers exhausted" edge of the same fix.
+        providers = [_fake_provider("groq"), _fake_provider("cerebras")]
+        calls: list = []
+        content_by_model = {
+            "groq-model": "garbage one",
+            "cerebras-model": "garbage two",
+        }
+
+        with mock.patch.object(config, "AI_PROVIDERS", providers), \
+                mock.patch.object(ai_review, "OpenAI", _fake_openai_client_factory(content_by_model, calls)):
+            review = ai_review.review_code(
+                {"app.py": "print('hi')"},
+                AnalysisResults(),
+                repo_name="test-repo",
+                language="python",
+            )
+
+        self.assertEqual(calls, ["groq-model", "cerebras-model"])
+        self.assertEqual(len(review.errors), 1)
+        self.assertIn("valid JSON", review.errors[0])
+
+    def test_fourth_fallback_provider_used_only_after_first_three_fail(self):
+        # End-to-end shape check with all four real provider names (groq,
+        # cerebras, mistral, fallback) -- mirrors config.AI_PROVIDERS'
+        # actual order, proving the new last-resort entry is reachable
+        # (and is genuinely last) through the real pipeline, not just in
+        # the config list itself (see tests/test_config.py for that).
+        providers = [
+            _fake_provider("groq"),
+            _fake_provider("cerebras"),
+            _fake_provider("mistral"),
+            _fake_provider("fallback", model="z13-model"),
+        ]
+        calls: list = []
+        content_by_model = {
+            "groq-model": "garbage",
+            "cerebras-model": "also garbage",
+            "mistral-model": "still garbage",
+            "z13-model": '{"summary": "ok from z13 fallback", "architecture_notes": "", "findings": []}',
+        }
+
+        with mock.patch.object(config, "AI_PROVIDERS", providers), \
+                mock.patch.object(ai_review, "OpenAI", _fake_openai_client_factory(content_by_model, calls)):
+            review = ai_review.review_code(
+                {"app.py": "print('hi')"},
+                AnalysisResults(),
+                repo_name="test-repo",
+                language="python",
+            )
+
+        self.assertEqual(calls, ["groq-model", "cerebras-model", "mistral-model", "z13-model"])
+        self.assertEqual(review.errors, [])
+        self.assertEqual(review.summary, "ok from z13 fallback")
+
+
+class TestFourthProviderConfiguredOrSkipped(unittest.TestCase):
+    """H1-style regression coverage for the new 4th ("fallback") provider
+    entry's chain behavior, using the same fake-provider-list pattern as
+    TestCallWithFallback above -- complements test_config.py's coverage of
+    the real env-var-driven config.AI_PROVIDERS construction."""
+
+    def test_fallback_provider_skipped_when_no_api_key(self):
+        providers = [
+            _fake_provider("groq"),
+            _fake_provider("cerebras"),
+            _fake_provider("mistral"),
+            _fake_provider("fallback", api_key=""),  # not configured
+        ]
+        with mock.patch.object(config, "AI_PROVIDERS", providers):
+            configured = ai_review._configured_providers()
+        self.assertEqual([p["name"] for p in configured], ["groq", "cerebras", "mistral"])
+
+    def test_fallback_provider_only_reached_after_the_first_three_fail(self):
+        providers = [
+            _fake_provider("groq"),
+            _fake_provider("cerebras"),
+            _fake_provider("mistral"),
+            _fake_provider("fallback"),
+        ]
+        calls = []
+
+        def make_request(client, model):
+            calls.append(model)
+            if model == "fallback-model":
+                return "z13 result"
+            raise RuntimeError(f"{model} failed")
+
+        with mock.patch.object(config, "AI_PROVIDERS", providers):
+            result = ai_review._call_with_fallback(make_request)
+
+        self.assertEqual(result, "z13 result")
+        self.assertEqual(calls, ["groq-model", "cerebras-model", "mistral-model", "fallback-model"])
+
+    def test_fallback_provider_never_tried_if_an_earlier_provider_succeeds(self):
+        providers = [
+            _fake_provider("groq"),
+            _fake_provider("cerebras"),
+            _fake_provider("mistral"),
+            _fake_provider("fallback"),
+        ]
+        calls = []
+
+        def make_request(client, model):
+            calls.append(model)
+            return "groq result"
+
+        with mock.patch.object(config, "AI_PROVIDERS", providers):
+            result = ai_review._call_with_fallback(make_request)
+
+        self.assertEqual(result, "groq result")
+        self.assertEqual(calls, ["groq-model"])  # cerebras/mistral/fallback never invoked
+
+
 if __name__ == "__main__":
     unittest.main()

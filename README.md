@@ -143,15 +143,16 @@ At least one of `GROQ_API_KEY` / `CEREBRAS_API_KEY` / `MISTRAL_API_KEY` must be 
 
 ## AI provider chain
 
-AI review tries providers in order — Groq first, then Cerebras, then Mistral — falling back automatically to the next one if a provider is out of quota, down, or simply not configured. You only need **one** key to get AI review working; adding more just buys headroom against any single free tier's rate limits (this is exactly what happened during development: a single PR's diff hit Groq's 12K TPM ceiling outright).
+AI review tries providers in order — Groq first, then Cerebras, then Mistral, then an optional 4th last-resort provider — falling back automatically to the next one if a provider is out of quota, down, returns unparseable content, or simply not configured. You only need **one** key to get AI review working; adding more just buys headroom against any single free tier's rate limits (this is exactly what happened during development: a single PR's diff hit Groq's 12K TPM ceiling outright).
 
 | Provider | Free tier | Get a key |
 |----------|-----------|-----------|
 | [Groq](https://console.groq.com) | `llama-3.3-70b-versatile`, 12K TPM | [console.groq.com/keys](https://console.groq.com/keys) |
 | [Cerebras](https://cloud.cerebras.ai) | `gpt-oss-120b`, 30K TPM, 1M TPD | [cloud.cerebras.ai](https://cloud.cerebras.ai) — free credits require adding a payment method on Cerebras' side, worth knowing before signing up |
 | [Mistral](https://console.mistral.ai) | `mistral-small-latest` ("Experiment" tier) | [console.mistral.ai](https://console.mistral.ai) — the free Experiment tier requires opting into data training on your inputs to unlock its full quota |
+| 4th: last-resort fallback (`QA_FALLBACK_*`) | Whatever you point it at | Not a named cloud service — a generic OpenAI-SDK-compatible endpoint you control (base URL, key, and model all self-supplied). Only reached once Groq, Cerebras, AND Mistral have all failed or are unconfigured. Added for consumer repos that want a self-hosted/private last resort (e.g. jarvis-infra's Z13 gateway) rather than relying purely on free cloud tiers. |
 
-A provider whose key isn't set is silently skipped, not an error — only having zero configured providers fails closed with a clear message.
+A provider whose key isn't set is silently skipped, not an error — only having zero configured providers fails closed with a clear message. A provider that responds but returns content that doesn't parse as the expected review JSON is also treated as a failure for that provider (not a silent pass-through), so the chain still advances to the next one.
 
 ## Token/key requirements
 
@@ -173,6 +174,9 @@ All config is via environment variables:
 | `QA_AI_MODEL` | `llama-3.3-70b-versatile` | Groq model (first provider in the chain) |
 | `QA_AI_MODEL_CEREBRAS` | `gpt-oss-120b` | Cerebras model (fallback) |
 | `QA_AI_MODEL_MISTRAL` | `mistral-small-latest` | Mistral model (fallback) |
+| `QA_FALLBACK_BASE_URL` | _(none)_ | Base URL for the 4th, last-resort fallback provider — set together with `QA_FALLBACK_API_KEY`/`QA_FALLBACK_MODEL` |
+| `QA_FALLBACK_API_KEY` | _(none)_ | Auth for the 4th, last-resort fallback provider |
+| `QA_FALLBACK_MODEL` | _(none)_ | Model name for the 4th, last-resort fallback provider |
 | `QA_AI_MAX_TOKENS` | `3000` | Max tokens per AI response |
 | `QA_AI_RETRY_MAX_ATTEMPTS` | `3` | Retries on rate-limit (HTTP 429), per provider, before falling back to the next one |
 | `QA_AI_RETRY_BASE_DELAY` | `5.0` | Base delay in seconds between retries (doubles each attempt) |
