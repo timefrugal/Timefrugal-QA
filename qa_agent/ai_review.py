@@ -368,6 +368,19 @@ Please perform a thorough code review of the changed files above.
 """
 
     def _make_request(client: OpenAI, model: str) -> dict:
+        # Z13's Ollama-served models (config.QA_FALLBACK_MODEL) default
+        # "thinking" ON; without an explicit think:false, a model with the
+        # known thinking-budget-exhaustion failure mode (glm-4.7-flash,
+        # gemma4 -- see scripts/z13/z13-model-fit-test.py in jarvis-infra)
+        # can burn the whole token budget on hidden reasoning and return
+        # empty content, which _parse_review_json already treats as a
+        # failure rather than a false-pass empty review -- this just
+        # avoids paying that latency/token cost on every call in the first
+        # place. Scoped to QA_FALLBACK_MODEL only via extra_body: an
+        # unrecognized top-level "think" key sent to Groq/Cerebras/Mistral
+        # could be rejected by their own strict schema validation, so this
+        # must never apply to the other three providers.
+        extra_body = {"think": False} if model == config.QA_FALLBACK_MODEL else None
         response = client.chat.completions.create(
             model=model,
             messages=[
@@ -378,6 +391,7 @@ Please perform a thorough code review of the changed files above.
             ],
             max_tokens=config.AI_MAX_TOKENS,
             temperature=0.1,
+            extra_body=extra_body,
         )
         # JSON parsing happens HERE, inside the per-provider attempt --
         # see _parse_review_json's docstring for why this must not happen
@@ -470,6 +484,10 @@ def generate_tests(
             ],
             max_tokens=config.AI_MAX_TOKENS,
             temperature=0.1,
+            # See the identical think:false comment in review_code's
+            # _make_request above -- same reasoning, same QA_FALLBACK_MODEL
+            # scoping, applied to the test-generation call site.
+            extra_body={"think": False} if model == config.QA_FALLBACK_MODEL else None,
         ))
         test_code = response.choices[0].message.content or ""
         # Strip markdown fences if present
