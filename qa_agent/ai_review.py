@@ -1,11 +1,12 @@
 """
-AI-powered code review using a chain of free-tier providers (Groq first,
-then Cerebras, in config.AI_PROVIDERS order) — no extra billing on any of
-them. Providers are tried in order; a provider that's out of quota, down,
-or simply not configured (missing API key) is skipped in favor of the
-next one, so a single provider running out doesn't take the whole AI
-review down. (GitHub Models, the original backend, was fully retired by
-GitHub on 2026-07-30.)
+AI-powered code review using a chain of free-tier providers (Groq, then
+Cerebras, then Mistral, then an optional env-gated last-resort fallback --
+see config.AI_PROVIDERS for the authoritative order) — no extra billing on
+any of them. Providers are tried in order; a provider that's out of quota,
+down, returns unparseable content, or simply not configured (missing API
+key) is skipped in favor of the next one, so a single provider running out
+(or misbehaving) doesn't take the whole AI review down. (GitHub Models,
+the original backend, was fully retired by GitHub on 2026-07-30.)
 """
 import json
 import sys
@@ -207,11 +208,23 @@ def _call_with_retry(fn: Callable[[], _T]) -> _T:
 # ──────────────────────────────────────────────
 
 def _configured_providers() -> List[dict]:
-    """config.AI_PROVIDERS entries that actually have an API key set, in
-    configured (priority) order. A provider a consumer repo hasn't added a
-    secret for yet is silently skipped, not an error -- same posture as
-    "falls closed with a clear message" only once ALL providers lack keys."""
-    return [p for p in config.AI_PROVIDERS if p.get("api_key")]
+    """config.AI_PROVIDERS entries that have api_key, base_url, AND model
+    all set, in configured (priority) order. A provider a consumer repo
+    hasn't added a secret for yet is silently skipped, not an error --
+    same posture as "falls closed with a clear message" only once ALL
+    providers lack keys.
+
+    Requiring all three (not just api_key) matters for the generic
+    QA_FALLBACK_* 4th slot specifically: unlike Groq/Cerebras/Mistral,
+    which always carry a real (hardcoded or defaulted) base_url and model
+    regardless of env vars, the fallback entry's base_url/model have NO
+    default -- so an operator who sets QA_FALLBACK_API_KEY without also
+    setting QA_FALLBACK_BASE_URL/QA_FALLBACK_MODEL would otherwise "count"
+    as configured and fail with a confusing error deep in the openai SDK
+    (empty base URL) rather than being cleanly skipped like an
+    unconfigured provider. This check is a no-op for the first three
+    providers, whose base_url/model are never empty."""
+    return [p for p in config.AI_PROVIDERS if p.get("api_key") and p.get("base_url") and p.get("model")]
 
 
 def _call_with_fallback(make_request: Callable[[OpenAI, str], _T]) -> _T:
@@ -226,7 +239,10 @@ def _call_with_fallback(make_request: Callable[[OpenAI, str], _T]) -> _T:
     if not providers:
         raise ValueError(
             "No AI provider configured. Set at least one of: "
-            + ", ".join(f"{p['name'].upper()}_API_KEY" for p in config.AI_PROVIDERS)
+            + ", ".join(
+                p.get("env_key", f"{p['name'].upper()}_API_KEY")
+                for p in config.AI_PROVIDERS
+            )
             + " (GitHub Models, the original backend, was retired 2026-07-30)."
         )
     last_error: Optional[Exception] = None
@@ -249,6 +265,63 @@ def _call_with_fallback(make_request: Callable[[OpenAI, str], _T]) -> _T:
     raise last_error
 
 
+def _parse_review_json(raw: Optional[str]) -> dict:
+    """Parse a provider's raw completion content as the review JSON schema
+    (stripping a markdown fence if the model wrapped its JSON in one).
+    Raises json.JSONDecodeError on unparseable, empty, or non-object
+    content -- see below for why all three count as failure here.
+
+    Deliberately called from INSIDE _call_with_fallback's per-provider
+    make_request callable (see review_code below), not after
+    _call_with_fallback returns. A provider that responds HTTP 200 with
+    garbage/unparseable content is a real, observed failure mode (Cerebras
+    did exactly this during a 2026-08-11 Groq-quota-exhaustion incident on
+    jarvis-infra, see jarvis-infra issue #200) -- at the transport level
+    that's a "success", so if parsing happened after the fallback loop
+    returned, the chain would never advance to the next provider (Mistral,
+    then any configured fourth fallback) even though the response was
+    useless. Raising here makes a garbage-but-200 response count as this
+    provider's failure, same as a network error or non-200 status, so
+    _call_with_fallback's existing except-Exception-and-advance logic
+    covers it for free.
+
+    Two failure shapes beyond plain-unparseable content, found in
+    independent review before this shipped:
+
+    - Empty/whitespace-only content must NOT default to an empty object.
+      The original pre-fix code substituted "{}" for falsy raw content,
+      which would make an empty response parse as a clean, zero-findings
+      review -- a silent false pass, worse than a crash, and a real
+      failure mode for a locally-hosted model given a too-small token
+      budget (the intended first fourth-provider consumer, Z13, has this
+      exact known failure mode on some models -- see project memory on
+      glm-4.7-flash/gemma4 needing think:false or burning the whole
+      budget on hidden reasoning with empty output).
+    - Valid JSON that isn't an object (a bare list/string/number all
+      parse successfully via json.loads but aren't the expected schema)
+      must not be returned as-is: review_code()'s data.get(...) calls
+      would then raise AttributeError OUTSIDE this function's caller's
+      try/except, crashing review_code entirely -- the exact class of
+      bug this whole fix exists to close, just one layer deeper.
+    """
+    text = (raw or "").strip()
+    if not text:
+        raise json.JSONDecodeError("empty AI response content", text, 0)
+    if text.startswith("```"):
+        text = text.split("```")[1]
+        if text.startswith("json"):
+            text = text[4:]
+        text = text.strip()
+    if not text:
+        raise json.JSONDecodeError("empty AI response content after fence stripping", text, 0)
+    data = json.loads(text)
+    if not isinstance(data, dict):
+        raise json.JSONDecodeError(
+            f"review JSON must be an object, got {type(data).__name__}", text, 0
+        )
+    return data
+
+
 # ──────────────────────────────────────────────
 # Review functions
 # ──────────────────────────────────────────────
@@ -262,8 +335,10 @@ def review_code(
 ) -> AIReview:
     """
     Send changed file contents + static analysis findings to the configured
-    AI provider chain (Groq, then Cerebras, in config.AI_PROVIDERS order).
-    Returns structured AIReview.
+    AI provider chain (config.AI_PROVIDERS order). A provider that responds
+    with unparseable JSON is treated the same as a transport failure and
+    the chain advances to the next configured provider -- see
+    _parse_review_json. Returns structured AIReview.
     """
     review = AIReview(ai_blocking=bool(repo_config.ai_blocking) if repo_config else False)
 
@@ -292,8 +367,21 @@ def review_code(
 Please perform a thorough code review of the changed files above.
 """
 
-    try:
-        response = _call_with_fallback(lambda client, model: client.chat.completions.create(
+    def _make_request(client: OpenAI, model: str) -> dict:
+        # Z13's Ollama-served models (config.QA_FALLBACK_MODEL) default
+        # "thinking" ON; without an explicit think:false, a model with the
+        # known thinking-budget-exhaustion failure mode (glm-4.7-flash,
+        # gemma4 -- see scripts/z13/z13-model-fit-test.py in jarvis-infra)
+        # can burn the whole token budget on hidden reasoning and return
+        # empty content, which _parse_review_json already treats as a
+        # failure rather than a false-pass empty review -- this just
+        # avoids paying that latency/token cost on every call in the first
+        # place. Scoped to QA_FALLBACK_MODEL only via extra_body: an
+        # unrecognized top-level "think" key sent to Groq/Cerebras/Mistral
+        # could be rejected by their own strict schema validation, so this
+        # must never apply to the other three providers.
+        extra_body = {"think": False} if model == config.QA_FALLBACK_MODEL else None
+        response = client.chat.completions.create(
             model=model,
             messages=[
                 {"role": "system", "content": _get_review_prompt(
@@ -303,19 +391,32 @@ Please perform a thorough code review of the changed files above.
             ],
             max_tokens=config.AI_MAX_TOKENS,
             temperature=0.1,
-        ))
-        raw = response.choices[0].message.content or "{}"
-        # Strip markdown fences if model wraps JSON
-        raw = raw.strip()
-        if raw.startswith("```"):
-            raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:]
-        data = json.loads(raw)
+            extra_body=extra_body,
+        )
+        # JSON parsing happens HERE, inside the per-provider attempt --
+        # see _parse_review_json's docstring for why this must not happen
+        # after _call_with_fallback returns. Pass content through
+        # untouched (no "or '{}'" substitution here) -- _parse_review_json
+        # itself treats empty/whitespace-only content as a failure, not a
+        # clean empty review; substituting "{}" before calling it would
+        # silently defeat that.
+        return _parse_review_json(response.choices[0].message.content)
+
+    try:
+        data = _call_with_fallback(_make_request)
     except json.JSONDecodeError as e:
-        review.errors.append(f"AI response was not valid JSON: {e}")
+        # json.JSONDecodeError IS-A ValueError, so this must be caught
+        # BEFORE the bare ValueError branch below or it'd be swallowed by
+        # that generic message instead. Every configured provider was
+        # tried (parsing happens inside _make_request, i.e. inside
+        # _call_with_fallback's per-provider loop) and the LAST one's
+        # response still didn't parse -- _call_with_fallback re-raises the
+        # final provider's error once the whole chain is exhausted.
+        review.errors.append(f"No configured AI provider returned valid JSON (last error: {e})")
         return review
     except ValueError as e:
+        # No providers configured at all -- distinct from a parse/transport
+        # failure of a configured provider.
         review.errors.append(str(e))
         return review
     except Exception as e:
@@ -383,6 +484,10 @@ def generate_tests(
             ],
             max_tokens=config.AI_MAX_TOKENS,
             temperature=0.1,
+            # See the identical think:false comment in review_code's
+            # _make_request above -- same reasoning, same QA_FALLBACK_MODEL
+            # scoping, applied to the test-generation call site.
+            extra_body={"think": False} if model == config.QA_FALLBACK_MODEL else None,
         ))
         test_code = response.choices[0].message.content or ""
         # Strip markdown fences if present

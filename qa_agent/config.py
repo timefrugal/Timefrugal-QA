@@ -56,10 +56,34 @@ MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY", "")
 # DJ's own account/tradeoff decision, not this tool's to make).
 AI_MODEL_MISTRAL = os.getenv("QA_AI_MODEL_MISTRAL", "mistral-small-latest")
 
+# Fourth, last-resort fallback slot: a generic OpenAI-SDK-compatible
+# endpoint, not tied to a specific named cloud service like the three
+# above. Named QA_FALLBACK_* rather than following a per-service pattern
+# (e.g. QA_AI_MODEL_<PROVIDER>) because this slot isn't for a fixed
+# service -- the first consumer is jarvis-infra routing to Z13 (a
+# Tailscale-reachable home GPU box running an Ollama-compatible gateway)
+# as a last resort when Groq/Cerebras/Mistral are all exhausted or down
+# (see jarvis-infra issue #200), but the slot itself is generic. No
+# built-in default for any of the three -- unlike Cerebras/Mistral's
+# base_url defaults, there's no sensible default endpoint for an
+# arbitrary self-hosted fallback, so all three must be explicitly set
+# together or this entry stays absent. Unlike Groq/Cerebras/Mistral
+# (gated purely on api_key, since their base_url/model always come from a
+# real default), ai_review._configured_providers ENFORCES this for the
+# generic slot specifically: it requires api_key AND base_url AND model
+# all non-empty, so a partially-configured fallback (e.g. only
+# QA_FALLBACK_API_KEY set) is cleanly skipped rather than "counting" as
+# configured and failing confusingly deep inside the openai SDK.
+QA_FALLBACK_BASE_URL = os.getenv("QA_FALLBACK_BASE_URL", "")
+QA_FALLBACK_API_KEY = os.getenv("QA_FALLBACK_API_KEY", "")
+QA_FALLBACK_MODEL = os.getenv("QA_FALLBACK_MODEL", "")
+
 # Provider chain, tried in this order by ai_review._call_with_fallback. A
 # provider whose API key env var isn't set is skipped, not an error --
-# consumer repos can add CEREBRAS_API_KEY/MISTRAL_API_KEY whenever they want
-# the fallback, and things keep working Groq-only until then.
+# consumer repos can add CEREBRAS_API_KEY/MISTRAL_API_KEY/QA_FALLBACK_API_KEY
+# whenever they want the fallback, and things keep working Groq-only until
+# then. QA_FALLBACK_* (last) is deliberately last-resort: it's only reached
+# once Groq, Cerebras, AND Mistral have all failed/are all unconfigured.
 AI_PROVIDERS = [
     {
         "name": "groq",
@@ -78,6 +102,19 @@ AI_PROVIDERS = [
         "base_url": os.getenv("MISTRAL_BASE_URL", "https://api.mistral.ai/v1"),
         "api_key": MISTRAL_API_KEY,
         "model": AI_MODEL_MISTRAL,
+    },
+    {
+        "name": "fallback",
+        "base_url": QA_FALLBACK_BASE_URL,
+        "api_key": QA_FALLBACK_API_KEY,
+        "model": QA_FALLBACK_MODEL,
+        # Explicit override: ai_review's "no providers configured" error
+        # message derives an env var name from f"{name.upper()}_API_KEY" by
+        # default (correct for groq/cerebras/mistral), which would say
+        # "FALLBACK_API_KEY" here -- wrong, the real var is
+        # QA_FALLBACK_API_KEY. env_key lets a provider entry override that
+        # derived name; entries without it keep the default derivation.
+        "env_key": "QA_FALLBACK_API_KEY",
     },
 ]
 
