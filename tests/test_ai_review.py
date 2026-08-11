@@ -7,8 +7,15 @@ following the convention established in tests/test_repo_config.py.
 import unittest
 from unittest import mock
 
+import json
+
 from qa_agent import ai_review, config
-from qa_agent.ai_review import _get_review_prompt, _per_file_char_budget, _validate_severity
+from qa_agent.ai_review import (
+    _get_review_prompt,
+    _parse_review_json,
+    _per_file_char_budget,
+    _validate_severity,
+)
 from qa_agent.repo_config import RepoConfig
 from qa_agent.static_analysis import AnalysisResults
 
@@ -126,13 +133,74 @@ class TestPerFileCharBudgetKeepsTotalPromptSizeBounded(unittest.TestCase):
         self.assertEqual(_per_file_char_budget(0, per_file_cap=6000), 6000)
 
 
-def _fake_provider(name, api_key="key-set", model=None):
+def _fake_provider(name, api_key="key-set", model=None, base_url=None):
     return {
         "name": name,
-        "base_url": f"https://{name}.example/v1",
+        "base_url": base_url if base_url is not None else f"https://{name}.example/v1",
         "api_key": api_key,
-        "model": model or f"{name}-model",
+        "model": model if model is not None else f"{name}-model",
     }
+
+
+class TestParseReviewJsonRejectsGarbageEmptyAndNonObjectContent(unittest.TestCase):
+    """
+    Independent review (before this shipped) found the original version of
+    this fix still had two live crash/false-pass paths one layer deeper
+    than the garbage-JSON case:
+
+    - Non-dict-but-valid JSON (a bare list/string/number all parse fine
+      via json.loads) used to be returned as-is, so review_code()'s later
+      `data.get("summary", "")` would raise AttributeError OUTSIDE the
+      try/except that's supposed to catch provider failures -- crashing
+      review_code entirely instead of falling through to the next
+      provider. Exactly the bug class this whole PR exists to close, one
+      level further in.
+    - Empty/whitespace-only content used to default to "{}" (a *valid*,
+      clean, zero-findings review) instead of being treated as a failure
+      -- a silent false pass, worse than a crash, and the Z13 fallback
+      provider's own known failure mode (a model burning its whole token
+      budget on hidden reasoning with empty visible output).
+    """
+
+    def test_valid_object_json_parses_normally(self):
+        data = _parse_review_json('{"summary": "ok", "findings": []}')
+        self.assertEqual(data, {"summary": "ok", "findings": []})
+
+    def test_markdown_fenced_valid_object_json_parses_normally(self):
+        data = _parse_review_json('```json\n{"summary": "ok", "findings": []}\n```')
+        self.assertEqual(data, {"summary": "ok", "findings": []})
+
+    def test_json_array_raises_instead_of_returning_non_dict(self):
+        with self.assertRaises(json.JSONDecodeError):
+            _parse_review_json("[1, 2, 3]")
+
+    def test_json_string_raises_instead_of_returning_non_dict(self):
+        with self.assertRaises(json.JSONDecodeError):
+            _parse_review_json('"just a string"')
+
+    def test_json_number_raises_instead_of_returning_non_dict(self):
+        with self.assertRaises(json.JSONDecodeError):
+            _parse_review_json("42")
+
+    def test_none_content_raises_instead_of_defaulting_to_empty_object(self):
+        with self.assertRaises(json.JSONDecodeError):
+            _parse_review_json(None)
+
+    def test_empty_string_content_raises_instead_of_defaulting_to_empty_object(self):
+        with self.assertRaises(json.JSONDecodeError):
+            _parse_review_json("")
+
+    def test_whitespace_only_content_raises(self):
+        with self.assertRaises(json.JSONDecodeError):
+            _parse_review_json("   \n  ")
+
+    def test_empty_content_inside_markdown_fence_raises(self):
+        with self.assertRaises(json.JSONDecodeError):
+            _parse_review_json("```json\n\n```")
+
+    def test_plain_garbage_still_raises(self):
+        with self.assertRaises(json.JSONDecodeError):
+            _parse_review_json("not json at all {{{")
 
 
 class TestConfiguredProvidersFiltersByApiKeyPresence(unittest.TestCase):
@@ -150,6 +218,48 @@ class TestConfiguredProvidersFiltersByApiKeyPresence(unittest.TestCase):
         providers = [_fake_provider("groq", api_key=""), _fake_provider("cerebras", api_key="")]
         with mock.patch.object(config, "AI_PROVIDERS", providers):
             self.assertEqual(ai_review._configured_providers(), [])
+
+
+class TestConfiguredProvidersRequiresBaseUrlAndModelTooForGenericSlots(unittest.TestCase):
+    """
+    Independent review found that _configured_providers originally gated
+    ONLY on api_key -- fine for Groq/Cerebras/Mistral (their base_url and
+    model always come from a real hardcoded/defaulted value, never
+    empty), but wrong for the generic QA_FALLBACK_* slot, which has no
+    default base_url or model. An operator who set QA_FALLBACK_API_KEY
+    without also setting QA_FALLBACK_BASE_URL/QA_FALLBACK_MODEL would
+    otherwise have that entry "count" as configured, then fail with a
+    confusing error deep inside the openai SDK (empty base URL) instead
+    of being cleanly skipped the same way a wholly-unconfigured provider
+    is. _configured_providers now requires api_key AND base_url AND model
+    all non-empty.
+    """
+
+    def test_api_key_alone_without_base_url_is_not_configured(self):
+        providers = [_fake_provider("fallback", base_url="")]
+        with mock.patch.object(config, "AI_PROVIDERS", providers):
+            self.assertEqual(ai_review._configured_providers(), [])
+
+    def test_api_key_alone_without_model_is_not_configured(self):
+        providers = [_fake_provider("fallback", model="")]
+        with mock.patch.object(config, "AI_PROVIDERS", providers):
+            self.assertEqual(ai_review._configured_providers(), [])
+
+    def test_all_three_fields_present_is_configured(self):
+        providers = [_fake_provider("fallback", base_url="http://z13.example/v1", model="z13-model")]
+        with mock.patch.object(config, "AI_PROVIDERS", providers):
+            configured = ai_review._configured_providers()
+        self.assertEqual([p["name"] for p in configured], ["fallback"])
+
+    def test_this_check_is_a_no_op_for_the_three_named_cloud_providers(self):
+        # Groq/Cerebras/Mistral's real config.py entries always have a
+        # non-empty base_url and model (hardcoded or os.getenv-defaulted),
+        # so this new requirement must not change their existing
+        # api-key-only-gated behavior.
+        providers = [_fake_provider("groq"), _fake_provider("cerebras"), _fake_provider("mistral")]
+        with mock.patch.object(config, "AI_PROVIDERS", providers):
+            configured = ai_review._configured_providers()
+        self.assertEqual([p["name"] for p in configured], ["groq", "cerebras", "mistral"])
 
 
 class TestCallWithFallback(unittest.TestCase):
@@ -437,6 +547,61 @@ class TestGarbageJsonFromEarlierProviderFallsThroughToNextProvider(unittest.Test
         self.assertEqual(calls, ["groq-model", "cerebras-model", "mistral-model", "z13-model"])
         self.assertEqual(review.errors, [])
         self.assertEqual(review.summary, "ok from z13 fallback")
+
+    def test_valid_but_non_object_json_from_first_provider_does_not_crash_review_code(self):
+        # Independent-review regression: a provider returning a bare JSON
+        # array/string/number parses SUCCESSFULLY via json.loads, so this
+        # must not be confused with the garbage/unparseable case above --
+        # it exercises a different path (_parse_review_json's isinstance
+        # check) and, before that fix, would have raised AttributeError
+        # OUTSIDE review_code's try/except (data.get(...) on a list) and
+        # crashed the whole review instead of falling through.
+        providers = [_fake_provider("groq"), _fake_provider("cerebras")]
+        calls: list = []
+        content_by_model = {
+            "groq-model": "[1, 2, 3]",  # valid JSON, not an object
+            "cerebras-model": '{"summary": "ok from cerebras", "architecture_notes": "", "findings": []}',
+        }
+
+        with mock.patch.object(config, "AI_PROVIDERS", providers), \
+                mock.patch.object(ai_review, "OpenAI", _fake_openai_client_factory(content_by_model, calls)):
+            review = ai_review.review_code(  # must not raise
+                {"app.py": "print('hi')"},
+                AnalysisResults(),
+                repo_name="test-repo",
+                language="python",
+            )
+
+        self.assertEqual(calls, ["groq-model", "cerebras-model"])
+        self.assertEqual(review.errors, [])
+        self.assertEqual(review.summary, "ok from cerebras")
+
+    def test_empty_content_from_first_provider_does_not_silently_pass_as_clean_review(self):
+        # Independent-review regression: empty/whitespace-only content
+        # used to default to "{}" (a valid, clean, zero-findings review)
+        # instead of being treated as a failure -- a silent false pass,
+        # worse than a crash, and specifically relevant to this PR's
+        # fourth-provider target (Z13's known empty-output failure mode
+        # on some models). Must fall through instead of reporting clean.
+        providers = [_fake_provider("groq"), _fake_provider("cerebras")]
+        calls: list = []
+        content_by_model = {
+            "groq-model": "",
+            "cerebras-model": '{"summary": "ok from cerebras", "architecture_notes": "", "findings": []}',
+        }
+
+        with mock.patch.object(config, "AI_PROVIDERS", providers), \
+                mock.patch.object(ai_review, "OpenAI", _fake_openai_client_factory(content_by_model, calls)):
+            review = ai_review.review_code(
+                {"app.py": "print('hi')"},
+                AnalysisResults(),
+                repo_name="test-repo",
+                language="python",
+            )
+
+        self.assertEqual(calls, ["groq-model", "cerebras-model"])
+        self.assertEqual(review.errors, [])
+        self.assertEqual(review.summary, "ok from cerebras")  # NOT an empty clean pass from groq
 
 
 class TestFourthProviderConfiguredOrSkipped(unittest.TestCase):

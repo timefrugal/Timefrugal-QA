@@ -67,9 +67,13 @@ AI_MODEL_MISTRAL = os.getenv("QA_AI_MODEL_MISTRAL", "mistral-small-latest")
 # built-in default for any of the three -- unlike Cerebras/Mistral's
 # base_url defaults, there's no sensible default endpoint for an
 # arbitrary self-hosted fallback, so all three must be explicitly set
-# together or this entry stays absent (see _configured_providers, which
-# gates purely on api_key being non-empty -- same rule as every other
-# entry here).
+# together or this entry stays absent. Unlike Groq/Cerebras/Mistral
+# (gated purely on api_key, since their base_url/model always come from a
+# real default), ai_review._configured_providers ENFORCES this for the
+# generic slot specifically: it requires api_key AND base_url AND model
+# all non-empty, so a partially-configured fallback (e.g. only
+# QA_FALLBACK_API_KEY set) is cleanly skipped rather than "counting" as
+# configured and failing confusingly deep inside the openai SDK.
 QA_FALLBACK_BASE_URL = os.getenv("QA_FALLBACK_BASE_URL", "")
 QA_FALLBACK_API_KEY = os.getenv("QA_FALLBACK_API_KEY", "")
 QA_FALLBACK_MODEL = os.getenv("QA_FALLBACK_MODEL", "")

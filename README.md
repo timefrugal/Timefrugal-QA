@@ -174,7 +174,7 @@ All config is via environment variables:
 | `QA_AI_MODEL` | `llama-3.3-70b-versatile` | Groq model (first provider in the chain) |
 | `QA_AI_MODEL_CEREBRAS` | `gpt-oss-120b` | Cerebras model (fallback) |
 | `QA_AI_MODEL_MISTRAL` | `mistral-small-latest` | Mistral model (fallback) |
-| `QA_FALLBACK_BASE_URL` | _(none)_ | Base URL for the 4th, last-resort fallback provider — set together with `QA_FALLBACK_API_KEY`/`QA_FALLBACK_MODEL` |
+| `QA_FALLBACK_BASE_URL` | _(none)_ | Base URL for the 4th, last-resort fallback provider — **required together with** `QA_FALLBACK_API_KEY`/`QA_FALLBACK_MODEL`; the provider is only considered configured once all three are set (a partial set is treated as unconfigured, not an error) |
 | `QA_FALLBACK_API_KEY` | _(none)_ | Auth for the 4th, last-resort fallback provider |
 | `QA_FALLBACK_MODEL` | _(none)_ | Model name for the 4th, last-resort fallback provider |
 | `QA_AI_MAX_TOKENS` | `3000` | Max tokens per AI response |

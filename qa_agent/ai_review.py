@@ -208,11 +208,23 @@ def _call_with_retry(fn: Callable[[], _T]) -> _T:
 # ──────────────────────────────────────────────
 
 def _configured_providers() -> List[dict]:
-    """config.AI_PROVIDERS entries that actually have an API key set, in
-    configured (priority) order. A provider a consumer repo hasn't added a
-    secret for yet is silently skipped, not an error -- same posture as
-    "falls closed with a clear message" only once ALL providers lack keys."""
-    return [p for p in config.AI_PROVIDERS if p.get("api_key")]
+    """config.AI_PROVIDERS entries that have api_key, base_url, AND model
+    all set, in configured (priority) order. A provider a consumer repo
+    hasn't added a secret for yet is silently skipped, not an error --
+    same posture as "falls closed with a clear message" only once ALL
+    providers lack keys.
+
+    Requiring all three (not just api_key) matters for the generic
+    QA_FALLBACK_* 4th slot specifically: unlike Groq/Cerebras/Mistral,
+    which always carry a real (hardcoded or defaulted) base_url and model
+    regardless of env vars, the fallback entry's base_url/model have NO
+    default -- so an operator who sets QA_FALLBACK_API_KEY without also
+    setting QA_FALLBACK_BASE_URL/QA_FALLBACK_MODEL would otherwise "count"
+    as configured and fail with a confusing error deep in the openai SDK
+    (empty base URL) rather than being cleanly skipped like an
+    unconfigured provider. This check is a no-op for the first three
+    providers, whose base_url/model are never empty."""
+    return [p for p in config.AI_PROVIDERS if p.get("api_key") and p.get("base_url") and p.get("model")]
 
 
 def _call_with_fallback(make_request: Callable[[OpenAI, str], _T]) -> _T:
@@ -256,7 +268,8 @@ def _call_with_fallback(make_request: Callable[[OpenAI, str], _T]) -> _T:
 def _parse_review_json(raw: Optional[str]) -> dict:
     """Parse a provider's raw completion content as the review JSON schema
     (stripping a markdown fence if the model wrapped its JSON in one).
-    Raises json.JSONDecodeError on unparseable content.
+    Raises json.JSONDecodeError on unparseable, empty, or non-object
+    content -- see below for why all three count as failure here.
 
     Deliberately called from INSIDE _call_with_fallback's per-provider
     make_request callable (see review_code below), not after
@@ -271,13 +284,42 @@ def _parse_review_json(raw: Optional[str]) -> dict:
     provider's failure, same as a network error or non-200 status, so
     _call_with_fallback's existing except-Exception-and-advance logic
     covers it for free.
+
+    Two failure shapes beyond plain-unparseable content, found in
+    independent review before this shipped:
+
+    - Empty/whitespace-only content must NOT default to an empty object.
+      The original pre-fix code substituted "{}" for falsy raw content,
+      which would make an empty response parse as a clean, zero-findings
+      review -- a silent false pass, worse than a crash, and a real
+      failure mode for a locally-hosted model given a too-small token
+      budget (the intended first fourth-provider consumer, Z13, has this
+      exact known failure mode on some models -- see project memory on
+      glm-4.7-flash/gemma4 needing think:false or burning the whole
+      budget on hidden reasoning with empty output).
+    - Valid JSON that isn't an object (a bare list/string/number all
+      parse successfully via json.loads but aren't the expected schema)
+      must not be returned as-is: review_code()'s data.get(...) calls
+      would then raise AttributeError OUTSIDE this function's caller's
+      try/except, crashing review_code entirely -- the exact class of
+      bug this whole fix exists to close, just one layer deeper.
     """
-    text = (raw or "{}").strip()
+    text = (raw or "").strip()
+    if not text:
+        raise json.JSONDecodeError("empty AI response content", text, 0)
     if text.startswith("```"):
         text = text.split("```")[1]
         if text.startswith("json"):
             text = text[4:]
-    return json.loads(text)
+        text = text.strip()
+    if not text:
+        raise json.JSONDecodeError("empty AI response content after fence stripping", text, 0)
+    data = json.loads(text)
+    if not isinstance(data, dict):
+        raise json.JSONDecodeError(
+            f"review JSON must be an object, got {type(data).__name__}", text, 0
+        )
+    return data
 
 
 # ──────────────────────────────────────────────
@@ -337,11 +379,14 @@ Please perform a thorough code review of the changed files above.
             max_tokens=config.AI_MAX_TOKENS,
             temperature=0.1,
         )
-        raw = response.choices[0].message.content or "{}"
         # JSON parsing happens HERE, inside the per-provider attempt --
         # see _parse_review_json's docstring for why this must not happen
-        # after _call_with_fallback returns.
-        return _parse_review_json(raw)
+        # after _call_with_fallback returns. Pass content through
+        # untouched (no "or '{}'" substitution here) -- _parse_review_json
+        # itself treats empty/whitespace-only content as a failure, not a
+        # clean empty review; substituting "{}" before calling it would
+        # silently defeat that.
+        return _parse_review_json(response.choices[0].message.content)
 
     try:
         data = _call_with_fallback(_make_request)

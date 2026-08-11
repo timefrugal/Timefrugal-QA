@@ -106,6 +106,24 @@ class TestFallbackProviderEnvWiring(unittest.TestCase):
         configured = ai_review._configured_providers()
         self.assertEqual(configured[-1]["name"], "fallback")
 
+    def test_fallback_provider_with_only_api_key_set_is_not_configured(self):
+        # Independent review before merge: _configured_providers requires
+        # api_key AND base_url AND model all non-empty for this generic
+        # slot (unlike Groq/Cerebras/Mistral, whose base_url/model always
+        # come from a real default). QA_FALLBACK_API_KEY alone -- a
+        # plausible partial-setup mistake -- must not "count" as
+        # configured; it would otherwise fail confusingly deep inside the
+        # openai SDK (empty base URL) instead of being cleanly skipped.
+        from qa_agent import ai_review
+
+        _reload_config_with_env({
+            "QA_FALLBACK_BASE_URL": "",
+            "QA_FALLBACK_API_KEY": "z13-key",
+            "QA_FALLBACK_MODEL": "",
+        })
+        configured_names = [p["name"] for p in ai_review._configured_providers()]
+        self.assertNotIn("fallback", configured_names)
+
     def test_missing_provider_error_message_names_the_real_env_var(self):
         # config.AI_PROVIDERS' generic "{name.upper()}_API_KEY" derivation
         # would produce the wrong string ("FALLBACK_API_KEY") for this
