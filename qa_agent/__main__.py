@@ -9,13 +9,19 @@ import argparse
 import os
 import sys
 
-# Windows PowerShell defaults to cp1252; reconfigure to UTF-8 so rich can render emoji
-if sys.platform == "win32":
-    try:
+# Force line-buffered stdout/stderr so progress prints stream in real time
+# under CI (stdout is fully block-buffered when not a TTY, which otherwise
+# makes every [agent] print silently accumulate and dump in one burst right
+# as the process exits -- see jarvis-infra issue #286).
+try:
+    sys.stdout.reconfigure(line_buffering=True)  # type: ignore[union-attr]
+    sys.stderr.reconfigure(line_buffering=True)  # type: ignore[union-attr]
+    # Windows PowerShell defaults to cp1252; reconfigure to UTF-8 so rich can render emoji.
+    if sys.platform == "win32":
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-    except Exception:
-        pass
+except Exception:
+    pass
 
 from qa_agent.agent import run
 

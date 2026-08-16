@@ -5,6 +5,7 @@ Uses stdlib unittest (no pytest / test framework is set up in this repo yet),
 following the convention established in tests/test_repo_config.py.
 """
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -109,6 +110,26 @@ class TestGetChangedFilesProjectRoot(unittest.TestCase):
         contents = read_file_contents(files, project_root=self.repo)
         self.assertIn("src/new_module.py", contents)
         self.assertIn("return 1", contents["src/new_module.py"])
+
+
+class TestMainForcesLineBufferedStdout(unittest.TestCase):
+    """
+    jarvis-infra#286: under GitHub Actions, stdout is not a TTY, so Python
+    fully block-buffers it -- every real-time [agent] progress print
+    silently accumulates and only appears in one burst right as the process
+    exits, which was repeatedly misread as a hung/crashed CI run when the
+    run had actually always completed successfully. Importing qa_agent.__main__
+    must force line buffering so progress streams in real time even when
+    stdout is piped (non-tty), which is exactly the condition under test
+    here via subprocess capture_output=True.
+    """
+
+    def test_stdout_is_line_buffered_when_piped(self):
+        result = subprocess.run(
+            [sys.executable, "-c", "import qa_agent.__main__, sys; print(sys.stdout.line_buffering)"],
+            capture_output=True, text=True, check=True,
+        )
+        self.assertEqual(result.stdout.strip(), "True")
 
 
 if __name__ == "__main__":

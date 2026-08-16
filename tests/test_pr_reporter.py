@@ -4,6 +4,8 @@ Tests for qa_agent.pr_reporter.
 Uses stdlib unittest (no pytest / test framework is set up in this repo yet),
 following the convention established in tests/test_repo_config.py.
 """
+import contextlib
+import io
 import unittest
 from unittest import mock
 
@@ -11,9 +13,9 @@ from qa_agent import config, pr_reporter
 
 
 class _FakeResponse:
-    def __init__(self, status_code=201):
+    def __init__(self, status_code=201, text=""):
         self.status_code = status_code
-        self.text = ""
+        self.text = text
 
     def json(self):
         return {}
@@ -71,6 +73,48 @@ class TestSetCommitStatusPrecedence(unittest.TestCase):
     def test_neither_is_success(self):
         state = self._post_and_capture_state(blocked=False, errored=False)
         self.assertEqual(state, "success")
+
+
+class TestSetCommitStatusLogging(unittest.TestCase):
+    """
+    jarvis-infra#286 follow-up: set_commit_status previously had no logging at
+    all on failure (unlike post_pr_comment), which made its apparent 100%
+    failure rate at creating the custom GitHub status context silently
+    invisible. This asserts both the success and failure paths now log to
+    the right stream and return the right bool.
+    """
+
+    def setUp(self):
+        patcher_repo = mock.patch.object(config, "GITHUB_REPOSITORY", "owner/repo")
+        patcher_sha = mock.patch.object(config, "GITHUB_SHA", "deadbeef")
+        patcher_repo.start()
+        patcher_sha.start()
+        self.addCleanup(patcher_repo.stop)
+        self.addCleanup(patcher_sha.stop)
+
+    def test_failure_response_logs_to_stderr_and_returns_false(self):
+        fake_resp = _FakeResponse(403, text="some error body")
+        stderr = io.StringIO()
+        with mock.patch("qa_agent.pr_reporter.requests.post", return_value=fake_resp):
+            with contextlib.redirect_stderr(stderr):
+                ok = pr_reporter.set_commit_status(blocked=False, errored=False)
+
+        self.assertFalse(ok)
+        output = stderr.getvalue()
+        self.assertIn("403", output)
+        self.assertIn("deadbeef", output)
+
+    def test_success_response_logs_to_stdout_and_returns_true(self):
+        fake_resp = _FakeResponse(201)
+        stdout = io.StringIO()
+        with mock.patch("qa_agent.pr_reporter.requests.post", return_value=fake_resp):
+            with contextlib.redirect_stdout(stdout):
+                ok = pr_reporter.set_commit_status(blocked=False, errored=False)
+
+        self.assertTrue(ok)
+        output = stdout.getvalue()
+        self.assertIn("deadbeef", output)
+        self.assertIn("success", output)
 
 
 if __name__ == "__main__":
