@@ -3,6 +3,7 @@ Posts structured review results as GitHub PR comments and sets commit status che
 """
 import json
 import os
+import sys
 import time
 from typing import Callable, Optional
 
@@ -114,7 +115,11 @@ def set_commit_status(blocked: bool, errored: bool = False, description: str = "
         "target_url": f"https://github.com/{repo}/pull/{config.PR_NUMBER}",
     }
     resp = _request_with_retry(requests.post, url, headers=_headers(), json=payload, timeout=30)
-    return resp.status_code == 201
+    if resp.status_code == 201:
+        print(f"[pr_reporter] Commit status '{state}' set on {sha}")
+        return True
+    print(f"[pr_reporter] Failed to set commit status on {sha}: {resp.status_code} {resp.text[:200]}", file=sys.stderr)
+    return False
 
 
 # ──────────────────────────────────────────────
