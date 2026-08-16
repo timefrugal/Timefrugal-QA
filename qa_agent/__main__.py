@@ -14,8 +14,8 @@ import sys
 # makes every [agent] print silently accumulate and dump in one burst right
 # as the process exits -- see jarvis-infra issue #286).
 try:
-    sys.stdout.reconfigure(line_buffering=True)
-    sys.stderr.reconfigure(line_buffering=True)
+    sys.stdout.reconfigure(line_buffering=True)  # type: ignore[union-attr]
+    sys.stderr.reconfigure(line_buffering=True)  # type: ignore[union-attr]
     # Windows PowerShell defaults to cp1252; reconfigure to UTF-8 so rich can render emoji.
     if sys.platform == "win32":
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
