@@ -16,6 +16,7 @@ from typing import Callable, List, Optional, TypeVar
 
 import openai
 from openai import OpenAI
+from openai.types.shared_params import ResponseFormatJSONSchema
 
 from qa_agent import config
 from qa_agent.repo_config import RepoConfig
@@ -87,6 +88,66 @@ Respond ONLY in valid JSON matching this schema:
   ]
 }
 Be precise and actionable. Do not hallucinate line numbers — use 0 if uncertain."""
+
+# Decoding-time enforcement of _REVIEW_JSON_SCHEMA above, for providers that
+# can't be trusted to follow it from plain-text instructions alone. Scoped to
+# QA_FALLBACK_MODEL only (see the identical think:false scoping in
+# review_code's _make_request) -- Groq/Cerebras/Mistral already return
+# schema-compliant JSON from the plain prompt in production, so this is
+# deliberately not applied to them: an unrecognized/differently-behaving
+# response_format could change their behavior for no benefit.
+#
+# Why this exists: independent testing (several local/self-hosted 7-8B
+# models against a real diff-review prompt) found models that write good,
+# relevant review content but never emit valid JSON on instructions alone --
+# not a capability gap, a formatting one. `response_format` forces
+# syntactically valid JSON at decode time regardless of instruction-following.
+#
+# DO NOT weaken this to plain `{"type": "json_object"}` mode as a "simpler"
+# fix -- that only guarantees valid JSON, not this shape. Tested live: a
+# model given basic json_object mode produced valid JSON in the WRONG shape
+# (e.g. {"changes": [...]} instead of {"summary", "findings"}), which
+# review_code's data.get(...) calls accept silently as an empty, "clean"
+# review -- a false pass, worse than the crash this whole file's error
+# handling exists to catch. The full schema with "required" + strict:true
+# is what actually prevents that.
+_REVIEW_JSON_RESPONSE_SCHEMA: ResponseFormatJSONSchema = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "code_review",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "summary": {"type": "string"},
+                "architecture_notes": {"type": "string"},
+                "findings": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "severity": {
+                                "type": "string",
+                                "enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"],
+                            },
+                            "category": {"type": "string"},
+                            "file": {"type": "string"},
+                            "line": {"type": "integer"},
+                            "message": {"type": "string"},
+                            "suggestion": {"type": "string"},
+                        },
+                        "required": [
+                            "severity", "category", "file", "line", "message", "suggestion",
+                        ],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            "required": ["summary", "architecture_notes", "findings"],
+            "additionalProperties": False,
+        },
+    },
+}
 
 _SYSTEM_PROMPTS: dict[str, str] = {
     "python": f"""You are a senior software engineer with 15+ years of experience reviewing Python code.
@@ -381,6 +442,14 @@ Please perform a thorough code review of the changed files above.
         # could be rejected by their own strict schema validation, so this
         # must never apply to the other three providers.
         extra_body = {"think": False} if model == config.QA_FALLBACK_MODEL else None
+        # See _REVIEW_JSON_RESPONSE_SCHEMA's docstring for why this is
+        # scoped to QA_FALLBACK_MODEL only, same reasoning/scoping as
+        # extra_body above. Unlike extra_body (typed as object | None),
+        # the SDK's response_format param does not accept None -- omit
+        # is the correct "not set" sentinel, confirmed via mypy.
+        response_format = (
+            _REVIEW_JSON_RESPONSE_SCHEMA if model == config.QA_FALLBACK_MODEL else openai.omit
+        )
         response = client.chat.completions.create(
             model=model,
             messages=[
@@ -392,6 +461,7 @@ Please perform a thorough code review of the changed files above.
             max_tokens=config.AI_MAX_TOKENS,
             temperature=0.1,
             extra_body=extra_body,
+            response_format=response_format,
         )
         # JSON parsing happens HERE, inside the per-provider attempt --
         # see _parse_review_json's docstring for why this must not happen

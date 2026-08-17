@@ -9,6 +9,8 @@ from unittest import mock
 
 import json
 
+import openai
+
 from qa_agent import ai_review, config
 from qa_agent.ai_review import (
     _get_review_prompt,
@@ -402,6 +404,73 @@ class TestReviewCodePassesRepoConfigExtraInstructionsIntoSystemPrompt(unittest.T
     def test_repo_config_with_empty_extra_instructions_leaves_prompt_unchanged(self):
         system_prompt = self._capture_system_prompt(RepoConfig(extra_instructions=""))
         self.assertEqual(system_prompt, _get_review_prompt("python"))
+
+
+class TestReviewCodeScopesResponseFormatToFallbackModelOnly(unittest.TestCase):
+    """
+    _REVIEW_JSON_RESPONSE_SCHEMA (decoding-time JSON-schema enforcement) must
+    be sent only when the provider being called IS QA_FALLBACK_MODEL, mirroring
+    the identical extra_body={"think": False} scoping already in place --
+    Groq/Cerebras/Mistral already comply with the plain-prompt schema in
+    production, so they must never receive an unfamiliar response_format
+    that could change their behavior for no benefit.
+
+    Captures the real `response_format` kwarg passed to the (stubbed)
+    provider call, going through the real review_code() -> _make_request
+    path rather than re-implementing the scoping logic under test.
+    """
+
+    def _capture_response_format(self, model_name, fallback_model):
+        captured = {}
+
+        class _FakeMessage:
+            content = '{"summary": "ok", "architecture_notes": "", "findings": []}'
+
+        class _FakeChoice:
+            message = _FakeMessage()
+
+        class _FakeResponse:
+            choices = [_FakeChoice()]
+
+        class _FakeCompletions:
+            def create(self, **kwargs):
+                captured["response_format"] = kwargs.get("response_format")
+                return _FakeResponse()
+
+        class _FakeChat:
+            completions = _FakeCompletions()
+
+        class _FakeClient:
+            chat = _FakeChat()
+
+        def fake_call_with_fallback(make_request):
+            return make_request(_FakeClient(), model_name)
+
+        with mock.patch.object(config, "QA_FALLBACK_MODEL", fallback_model), \
+                mock.patch.object(ai_review, "_call_with_fallback", fake_call_with_fallback):
+            ai_review.review_code(
+                {"app.py": "print('hi')"},
+                AnalysisResults(),
+                repo_name="test-repo",
+                language="python",
+            )
+        return captured["response_format"]
+
+    def test_fallback_model_call_receives_the_schema(self):
+        response_format = self._capture_response_format("z13-model", fallback_model="z13-model")
+        self.assertEqual(response_format, ai_review._REVIEW_JSON_RESPONSE_SCHEMA)
+
+    def test_cloud_provider_call_does_not_receive_the_schema(self):
+        # response_format's SDK type doesn't accept None (unlike
+        # extra_body) -- openai.omit is the correct "not set" sentinel.
+        response_format = self._capture_response_format("groq-model", fallback_model="z13-model")
+        self.assertIs(response_format, openai.omit)
+
+    def test_no_fallback_configured_never_sends_the_schema(self):
+        # QA_FALLBACK_MODEL defaults to "" (unset) -- a call for a model
+        # that happens to be the empty string must not match by accident.
+        response_format = self._capture_response_format("groq-model", fallback_model="")
+        self.assertIs(response_format, openai.omit)
 
 
 def _fake_openai_client_factory(content_by_model: dict, calls: list):
