@@ -78,6 +78,26 @@ QA_FALLBACK_BASE_URL = os.getenv("QA_FALLBACK_BASE_URL", "")
 QA_FALLBACK_API_KEY = os.getenv("QA_FALLBACK_API_KEY", "")
 QA_FALLBACK_MODEL = os.getenv("QA_FALLBACK_MODEL", "")
 
+# Whether review_code() sends a decoding-time JSON-schema response_format
+# constraint (see ai_review._REVIEW_JSON_RESPONSE_SCHEMA) on calls to
+# QA_FALLBACK_MODEL. Defaults on -- this is what was verified live against
+# qwen2.5:7b (a model that writes good review content but doesn't reliably
+# emit valid JSON from plain-text instructions alone).
+#
+# Not every model that ends up in the QA_FALLBACK_MODEL slot needs or
+# benefits from this, though: a real-world eval (Mika#66/#68, 2026-08-17)
+# found a DIFFERENT model plugged into the same slot -- llama4:scout,
+# which already emits schema-compliant JSON from the plain prompt and had
+# an 8/8 unconstrained track record -- started failing 4/4 with response
+# truncation once response_format was force-applied to it. The schema
+# constraint changes decoding behavior in a way that isn't free for every
+# model, so this must be an explicit per-deployment choice, not baked in
+# unconditionally for the whole QA_FALLBACK_MODEL slot. Consumer repos
+# whose QA_FALLBACK_MODEL doesn't need it should set this to "false".
+QA_FALLBACK_RESPONSE_FORMAT = os.getenv(
+    "QA_FALLBACK_RESPONSE_FORMAT", "true"
+).strip().lower() not in ("false", "0", "no")
+
 # Provider chain, tried in this order by ai_review._call_with_fallback. A
 # provider whose API key env var isn't set is skipped, not an error --
 # consumer repos can add CEREBRAS_API_KEY/MISTRAL_API_KEY/QA_FALLBACK_API_KEY

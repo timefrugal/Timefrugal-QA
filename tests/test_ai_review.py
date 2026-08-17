@@ -420,7 +420,7 @@ class TestReviewCodeScopesResponseFormatToFallbackModelOnly(unittest.TestCase):
     path rather than re-implementing the scoping logic under test.
     """
 
-    def _capture_response_format(self, model_name, fallback_model):
+    def _capture_response_format(self, model_name, fallback_model, response_format_enabled=True):
         captured = {}
 
         class _FakeMessage:
@@ -447,6 +447,7 @@ class TestReviewCodeScopesResponseFormatToFallbackModelOnly(unittest.TestCase):
             return make_request(_FakeClient(), model_name)
 
         with mock.patch.object(config, "QA_FALLBACK_MODEL", fallback_model), \
+                mock.patch.object(config, "QA_FALLBACK_RESPONSE_FORMAT", response_format_enabled), \
                 mock.patch.object(ai_review, "_call_with_fallback", fake_call_with_fallback):
             ai_review.review_code(
                 {"app.py": "print('hi')"},
@@ -471,6 +472,24 @@ class TestReviewCodeScopesResponseFormatToFallbackModelOnly(unittest.TestCase):
         # that happens to be the empty string must not match by accident.
         response_format = self._capture_response_format("groq-model", fallback_model="")
         self.assertIs(response_format, openai.omit)
+
+    def test_fallback_model_opted_out_of_response_format_does_not_receive_the_schema(self):
+        # Mika#66/#68: a model plugged into QA_FALLBACK_MODEL that already
+        # emits schema-compliant JSON unconstrained can be actively hurt by
+        # the schema constraint (observed: an 8/8 clean model started
+        # failing 4/4 on truncation once this was force-applied). Operators
+        # must be able to opt a specific deployment out entirely.
+        response_format = self._capture_response_format(
+            "z13-model", fallback_model="z13-model", response_format_enabled=False,
+        )
+        self.assertIs(response_format, openai.omit)
+
+    def test_response_format_flag_defaults_on(self):
+        # config.QA_FALLBACK_RESPONSE_FORMAT itself (env-derived, not the
+        # test's own mock default) must default to True so existing
+        # deployments (e.g. qwen2.5:7b, the model this was built/verified
+        # against) keep today's behavior without setting a new env var.
+        self.assertTrue(config.QA_FALLBACK_RESPONSE_FORMAT)
 
 
 def _fake_openai_client_factory(content_by_model: dict, calls: list):
