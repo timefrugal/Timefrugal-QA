@@ -97,6 +97,12 @@ Be precise and actionable. Do not hallucinate line numbers — use 0 if uncertai
 # deliberately not applied to them: an unrecognized/differently-behaving
 # response_format could change their behavior for no benefit.
 #
+# Also gated on config.QA_FALLBACK_RESPONSE_FORMAT (default on) -- see that
+# flag's docstring in config.py. Not every model a consumer repo points
+# QA_FALLBACK_MODEL at needs this, and it isn't free when unneeded: a real
+# eval found a model with an already-reliable unconstrained JSON track
+# record start failing on truncation once this was force-applied to it.
+#
 # Why this exists: independent testing (several local/self-hosted 7-8B
 # models against a real diff-review prompt) found models that write good,
 # relevant review content but never emit valid JSON on instructions alone --
@@ -444,11 +450,15 @@ Please perform a thorough code review of the changed files above.
         extra_body = {"think": False} if model == config.QA_FALLBACK_MODEL else None
         # See _REVIEW_JSON_RESPONSE_SCHEMA's docstring for why this is
         # scoped to QA_FALLBACK_MODEL only, same reasoning/scoping as
-        # extra_body above. Unlike extra_body (typed as object | None),
-        # the SDK's response_format param does not accept None -- omit
-        # is the correct "not set" sentinel, confirmed via mypy.
+        # extra_body above -- and ALSO gated on QA_FALLBACK_RESPONSE_FORMAT
+        # (config.py), since not every model in that slot benefits from
+        # the constraint. Unlike extra_body (typed as object | None), the
+        # SDK's response_format param does not accept None -- omit is the
+        # correct "not set" sentinel, confirmed via mypy.
         response_format = (
-            _REVIEW_JSON_RESPONSE_SCHEMA if model == config.QA_FALLBACK_MODEL else openai.omit
+            _REVIEW_JSON_RESPONSE_SCHEMA
+            if model == config.QA_FALLBACK_MODEL and config.QA_FALLBACK_RESPONSE_FORMAT
+            else openai.omit
         )
         response = client.chat.completions.create(
             model=model,
