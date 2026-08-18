@@ -10,7 +10,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from qa_agent.agent import get_changed_files, read_file_contents
+from qa_agent.agent import (
+    get_changed_files,
+    get_changed_line_ranges,
+    get_diff_text,
+    read_file_contents,
+)
 
 
 def _git(repo_dir, *args):
@@ -110,6 +115,113 @@ class TestGetChangedFilesProjectRoot(unittest.TestCase):
         contents = read_file_contents(files, project_root=self.repo)
         self.assertIn("src/new_module.py", contents)
         self.assertIn("return 1", contents["src/new_module.py"])
+
+
+class TestGetChangedLineRanges(unittest.TestCase):
+    """
+    jarvis-infra issues #306/#307/#310: the AI reviewer had no way to tell
+    newly-introduced lines from code that predates a PR by months, and
+    routinely fabricated/escalated CRITICAL/HIGH findings against
+    pre-existing code as a result. get_changed_line_ranges() is the
+    ground-truth source review_code()'s severity-demotion pass checks
+    against -- these tests verify it against real `git diff` output, not
+    a re-implementation of diff parsing.
+    """
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.repo = self._tmpdir.name
+        self.addCleanup(self._tmpdir.cleanup)
+        _init_repo(self.repo)
+
+    def _commit(self, filename, content, message):
+        (Path(self.repo) / filename).write_text(content)
+        _git(self.repo, "add", filename)
+        _git(self.repo, "commit", "-q", "-m", message)
+
+    def test_single_added_line_is_the_only_line_in_range(self):
+        self._commit("app.py", "line1\nline2\nline3\n", "initial")
+        _git(self.repo, "branch", "-m", "main")
+        _git(self.repo, "checkout", "-q", "-b", "feature")
+        self._commit("app.py", "line1\nline2\nline3\nline4\n", "add a line")
+
+        ranges = get_changed_line_ranges("main", ["app.py"], project_root=self.repo)
+        self.assertEqual(ranges, {"app.py": {4}})
+
+    def test_modified_line_in_the_middle_is_the_only_line_in_range(self):
+        self._commit("app.py", "line1\nline2\nline3\n", "initial")
+        _git(self.repo, "branch", "-m", "main")
+        _git(self.repo, "checkout", "-q", "-b", "feature")
+        self._commit("app.py", "line1\nCHANGED\nline3\n", "modify line 2")
+
+        ranges = get_changed_line_ranges("main", ["app.py"], project_root=self.repo)
+        self.assertEqual(ranges, {"app.py": {2}})
+
+    def test_pure_deletion_contributes_no_lines_but_file_still_present(self):
+        self._commit("app.py", "line1\nline2\nline3\n", "initial")
+        _git(self.repo, "branch", "-m", "main")
+        _git(self.repo, "checkout", "-q", "-b", "feature")
+        self._commit("app.py", "line1\nline3\n", "delete line 2")
+
+        ranges = get_changed_line_ranges("main", ["app.py"], project_root=self.repo)
+        # The file legitimately appears (it's a changed file), but a pure
+        # deletion adds nothing to the new-file line range -- there's no
+        # added/modified line left to scope a finding against.
+        self.assertIn("app.py", ranges)
+        self.assertEqual(ranges["app.py"], set())
+
+    def test_multiple_hunks_in_one_file_both_contribute(self):
+        lines = [f"line{i}\n" for i in range(1, 21)]
+        self._commit("app.py", "".join(lines), "initial")
+        _git(self.repo, "branch", "-m", "main")
+        _git(self.repo, "checkout", "-q", "-b", "feature")
+        lines[1] = "CHANGED_NEAR_TOP\n"     # new-file line 2
+        lines[17] = "CHANGED_NEAR_BOTTOM\n"  # new-file line 18
+        self._commit("app.py", "".join(lines), "two separate edits")
+
+        ranges = get_changed_line_ranges("main", ["app.py"], project_root=self.repo)
+        self.assertEqual(ranges["app.py"], {2, 18})
+
+    def test_unrelated_file_not_in_the_diff_is_absent_from_ranges(self):
+        self._commit("app.py", "line1\n", "initial")
+        self._commit("other.py", "print('untouched')\n", "add other.py")
+        _git(self.repo, "branch", "-m", "main")
+        _git(self.repo, "checkout", "-q", "-b", "feature")
+        self._commit("app.py", "line1\nline2\n", "modify app.py only")
+
+        ranges = get_changed_line_ranges("main", ["app.py"], project_root=self.repo)
+        self.assertNotIn("other.py", ranges)
+
+    def test_no_files_returns_empty_dict(self):
+        self.assertEqual(get_changed_line_ranges("main", [], project_root=self.repo), {})
+
+
+class TestGetDiffText(unittest.TestCase):
+    """get_diff_text() must return a real, non-empty unified diff for an
+    actual change, and empty string for no files -- the direct input to
+    review_code()'s new diff_text prompt section."""
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.repo = self._tmpdir.name
+        self.addCleanup(self._tmpdir.cleanup)
+        _init_repo(self.repo)
+        (Path(self.repo) / "app.py").write_text("line1\nline2\n")
+        _git(self.repo, "add", "app.py")
+        _git(self.repo, "commit", "-q", "-m", "initial")
+        _git(self.repo, "branch", "-m", "main")
+        _git(self.repo, "checkout", "-q", "-b", "feature")
+        (Path(self.repo) / "app.py").write_text("line1\nline2\nline3\n")
+        _git(self.repo, "add", "app.py")
+        _git(self.repo, "commit", "-q", "-m", "add line3")
+
+    def test_returns_a_real_unified_diff_containing_the_new_line(self):
+        diff = get_diff_text("main", ["app.py"], project_root=self.repo)
+        self.assertIn("+line3", diff)
+        self.assertIn("app.py", diff)
+
+    def test_no_files_returns_empty_string(self):
+        self.assertEqual(get_diff_text("main", [], project_root=self.repo), "")
 
 
 class TestMainForcesLineBufferedStdout(unittest.TestCase):

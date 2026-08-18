@@ -13,6 +13,8 @@ import openai
 
 from qa_agent import ai_review, config
 from qa_agent.ai_review import (
+    AIFinding,
+    _demote_if_outside_diff,
     _get_review_prompt,
     _parse_review_json,
     _per_file_char_budget,
@@ -748,6 +750,240 @@ class TestFourthProviderConfiguredOrSkipped(unittest.TestCase):
 
         self.assertEqual(result, "groq result")
         self.assertEqual(calls, ["groq-model"])  # cerebras/mistral/fallback never invoked
+
+
+class TestDemoteIfOutsideDiff(unittest.TestCase):
+    """
+    jarvis-infra issues #306/#307/#310: real free-tier AI reviewers
+    repeatedly fabricated or escalated CRITICAL/HIGH findings against code
+    entirely outside the PR's actual diff. _demote_if_outside_diff() is
+    the structural (non-prompt-dependent) guard closing that gap -- these
+    tests exercise the function directly, in isolation from review_code()'s
+    provider-chain machinery.
+    """
+
+    def _finding(self, severity="CRITICAL", file="app.py", line=10):
+        return AIFinding(
+            severity=severity, category="security", file=file, line=line,
+            message="dangerous thing", suggestion="fix it",
+        )
+
+    def test_critical_finding_inside_diff_passes_through_unchanged(self):
+        finding = self._finding(severity="CRITICAL", line=10)
+        result = _demote_if_outside_diff(finding, {"app.py": {8, 9, 10, 11}})
+        self.assertIs(result, finding)
+        self.assertEqual(result.severity, "CRITICAL")
+
+    def test_high_finding_inside_diff_passes_through_unchanged(self):
+        finding = self._finding(severity="HIGH", line=10)
+        result = _demote_if_outside_diff(finding, {"app.py": {10}})
+        self.assertEqual(result.severity, "HIGH")
+
+    def test_critical_finding_outside_diff_is_demoted_to_medium(self):
+        finding = self._finding(severity="CRITICAL", line=500)
+        result = _demote_if_outside_diff(finding, {"app.py": {8, 9, 10, 11}})
+        self.assertEqual(result.severity, config.SEVERITY_MEDIUM)
+        self.assertIn("demoted from CRITICAL", result.message)
+        self.assertIn("outside this PR's diff", result.message)
+        # Original content preserved, not discarded -- still a useful
+        # suggestion, just no longer blocking.
+        self.assertIn("dangerous thing", result.message)
+        self.assertEqual(result.suggestion, "fix it")
+
+    def test_finding_for_a_file_not_in_the_diff_at_all_is_demoted(self):
+        finding = self._finding(severity="HIGH", file="unrelated.py", line=1)
+        result = _demote_if_outside_diff(finding, {"app.py": {10}})
+        self.assertEqual(result.severity, config.SEVERITY_MEDIUM)
+
+    def test_line_zero_uncertain_finding_is_demoted_even_if_file_in_diff(self):
+        # Per _REVIEW_JSON_SCHEMA's own instruction to the model ("use 0 if
+        # uncertain") -- an unverifiable line number can't be trusted at
+        # blocking severity either.
+        finding = self._finding(severity="CRITICAL", line=0)
+        result = _demote_if_outside_diff(finding, {"app.py": {8, 9, 10, 11}})
+        self.assertEqual(result.severity, config.SEVERITY_MEDIUM)
+
+    def test_line_zero_demoted_for_high_severity_too_not_just_critical(self):
+        # Same code path handles both severities identically -- covered
+        # explicitly rather than assumed from the CRITICAL case above.
+        finding = self._finding(severity="HIGH", line=0)
+        result = _demote_if_outside_diff(finding, {"app.py": {8, 9, 10, 11}})
+        self.assertEqual(result.severity, config.SEVERITY_MEDIUM)
+
+    def test_medium_and_below_findings_are_never_touched_even_outside_diff(self):
+        for severity in ("MEDIUM", "LOW", "INFO"):
+            finding = self._finding(severity=severity, line=999)
+            result = _demote_if_outside_diff(finding, {"app.py": {10}})
+            self.assertIs(result, finding)
+            self.assertEqual(result.severity, severity)
+
+    def test_none_changed_line_ranges_is_a_no_op_backward_compat(self):
+        # An older/other caller of review_code() that hasn't been updated
+        # to compute changed_line_ranges must see EXACTLY today's
+        # behavior -- findings pass through unchecked, not mass-demoted.
+        finding = self._finding(severity="CRITICAL", line=999)
+        result = _demote_if_outside_diff(finding, None)
+        self.assertIs(result, finding)
+
+    def test_empty_range_for_a_file_present_in_the_dict_demotes(self):
+        # The file IS in the diff (e.g. a rename or deletion-only change)
+        # but genuinely touched zero lines -- any CRITICAL/HIGH claim
+        # about it is unverifiable and gets demoted.
+        finding = self._finding(severity="HIGH", file="renamed.py", line=5)
+        result = _demote_if_outside_diff(finding, {"renamed.py": set()})
+        self.assertEqual(result.severity, config.SEVERITY_MEDIUM)
+
+
+class TestReviewCodeDiffScopingEndToEnd(unittest.TestCase):
+    """
+    Same class of regression test as
+    TestGarbageJsonFromEarlierProviderFallsThroughToNextProvider above --
+    goes through the REAL review_code() (diff-section prompt construction
+    AND the post-parse demotion pass), only the OpenAI client itself is
+    faked.
+    """
+
+    def test_ai_finding_outside_diff_is_demoted_in_the_real_pipeline(self):
+        providers = [_fake_provider("groq")]
+        calls: list = []
+        content_by_model = {
+            "groq-model": json.dumps({
+                "summary": "reviewed",
+                "architecture_notes": "",
+                "findings": [
+                    {"severity": "CRITICAL", "category": "security", "file": "app.py",
+                     "line": 500, "message": "fabricated, far from the real diff",
+                     "suggestion": "n/a"},
+                    {"severity": "HIGH", "category": "bug", "file": "app.py",
+                     "line": 10, "message": "a real issue in the new code",
+                     "suggestion": "fix it"},
+                ],
+            }),
+        }
+
+        with mock.patch.object(config, "AI_PROVIDERS", providers), \
+                mock.patch.object(ai_review, "OpenAI", _fake_openai_client_factory(content_by_model, calls)):
+            review = ai_review.review_code(
+                {"app.py": "line1\n" * 600},
+                AnalysisResults(),
+                repo_name="test-repo",
+                language="python",
+                diff_text="--- a/app.py\n+++ b/app.py\n@@ -9,0 +10 @@\n+new line\n",
+                changed_line_ranges={"app.py": {10}},
+            )
+
+        self.assertEqual(len(review.findings), 2)
+        outside, inside = review.findings
+        self.assertEqual(outside.severity, config.SEVERITY_MEDIUM)
+        self.assertIn("demoted from CRITICAL", outside.message)
+        self.assertEqual(inside.severity, "HIGH")  # genuinely inside the diff, untouched
+
+    def test_no_changed_line_ranges_passed_keeps_prior_behavior(self):
+        # Confirms review_code() itself defaults changed_line_ranges to
+        # None when a caller doesn't pass it -- existing callers (and
+        # existing tests elsewhere in this file that call review_code()
+        # without the new kwargs) see unchanged behavior.
+        providers = [_fake_provider("groq")]
+        calls: list = []
+        content_by_model = {
+            "groq-model": json.dumps({
+                "summary": "reviewed",
+                "architecture_notes": "",
+                "findings": [
+                    {"severity": "CRITICAL", "category": "security", "file": "app.py",
+                     "line": 500, "message": "would be demoted if ranges were passed",
+                     "suggestion": "n/a"},
+                ],
+            }),
+        }
+
+        with mock.patch.object(config, "AI_PROVIDERS", providers), \
+                mock.patch.object(ai_review, "OpenAI", _fake_openai_client_factory(content_by_model, calls)):
+            review = ai_review.review_code(
+                {"app.py": "print('hi')"},
+                AnalysisResults(),
+                repo_name="test-repo",
+                language="python",
+            )
+
+        self.assertEqual(review.findings[0].severity, "CRITICAL")
+
+
+class TestDiffSectionInReviewPrompt(unittest.TestCase):
+    """The diff text, when provided, must actually reach the user message
+    sent to the provider -- and be cleanly absent (not an empty/broken
+    section) when no diff_text is given (e.g. a brand-new untracked file,
+    or a caller that hasn't been updated)."""
+
+    def _capture_user_content(self, diff_text):
+        providers = [_fake_provider("groq")]
+        captured = {}
+
+        class _FakeMessage:
+            content = '{"summary": "ok", "architecture_notes": "", "findings": []}'
+
+        class _FakeChoice:
+            message = _FakeMessage()
+
+        class _FakeResponse:
+            choices = [_FakeChoice()]
+
+        class _FakeCompletions:
+            def create(self, **kwargs):
+                captured["user_content"] = kwargs["messages"][1]["content"]
+                return _FakeResponse()
+
+        class _FakeChat:
+            completions = _FakeCompletions()
+
+        class _FakeClient:
+            chat = _FakeChat()
+
+        with mock.patch.object(config, "AI_PROVIDERS", providers), \
+                mock.patch.object(ai_review, "OpenAI", lambda base_url=None, api_key=None: _FakeClient()):
+            ai_review.review_code(
+                {"app.py": "print('hi')"},
+                AnalysisResults(),
+                repo_name="test-repo",
+                language="python",
+                diff_text=diff_text,
+            )
+        return captured["user_content"]
+
+    def test_diff_text_appears_in_the_sent_prompt(self):
+        content = self._capture_user_content("--- a/app.py\n+++ b/app.py\n@@ -1 +1 @@\n-old\n+new\n")
+        self.assertIn("## Diff (what this PR actually changed)", content)
+        self.assertIn("+new", content)
+
+    def test_empty_diff_text_omits_the_diff_section_entirely(self):
+        content = self._capture_user_content("")
+        self.assertNotIn("## Diff (what this PR actually changed)", content)
+
+    def test_diff_text_longer_than_cap_is_truncated(self):
+        huge_diff = "+line\n" * 5000  # far larger than AI_MAX_DIFF_CHARS
+        with mock.patch.object(config, "AI_MAX_DIFF_CHARS", 100):
+            content = self._capture_user_content(huge_diff)
+        self.assertIn("[diff truncated]", content)
+
+    def test_empty_diff_text_does_not_tell_the_model_everything_is_pre_existing(self):
+        # Regression test for a real bug found in independent review before
+        # merge: an earlier version of this fix hoisted the "code shown
+        # here is PRE-EXISTING, cap at MEDIUM" instruction out of the
+        # `if diff_text:` guard, so it applied unconditionally -- meaning
+        # a caller with no diff (an old caller that hasn't been updated,
+        # OR agent.py's own get_diff_text() falling back to "" when `git
+        # diff` itself fails) got told every changed line was pre-existing
+        # and should be capped at MEDIUM, with NO diff shown to justify
+        # that claim -- silently encouraging under-reporting of genuinely
+        # new CRITICAL/HIGH issues on exactly the path this fix is
+        # supposed to leave untouched. Mutation check: re-hoisting that
+        # instruction out of the `if diff_text:` block makes this fail.
+        content = self._capture_user_content("")
+        self.assertNotIn("PRE-EXISTING", content)
+        self.assertNotIn("MEDIUM or lower", content)
+        # Exact pre-fix wording, reproduced when there's no diff to reason from.
+        self.assertIn("## Changed Files\n", content)
+        self.assertIn("Please perform a thorough code review of the changed files above.", content)
 
 
 if __name__ == "__main__":

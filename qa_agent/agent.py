@@ -3,11 +3,12 @@ Timefrugal-QA Agent — main orchestrator.
 Determines changed files, runs all analysis, generates tests, then reports.
 """
 import os
+import re
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional, Set
 
 from qa_agent import config
 from qa_agent.static_analysis import run_all, detect_language, AnalysisResults
@@ -43,6 +44,94 @@ def get_changed_files(base_ref: str = "origin/main", project_root: str = ".") ->
     except subprocess.CalledProcessError as e:
         print(f"[agent] git diff failed: {e.stderr.strip()}", file=sys.stderr)
         return []
+
+
+def get_diff_text(base_ref: str, files: List[str], project_root: str = ".",
+                   context_lines: int = 3) -> str:
+    """Return the unified diff text (default 3 lines of context) for the
+    given files against base_ref -- the actual patch, not full file
+    content. Same three-dot semantics as get_changed_files() above, for
+    the same stale-local-branch reason.
+
+    Sent to the AI reviewer (review_code()'s diff_text param) alongside
+    the existing full-file content, so it has an actual diff boundary to
+    work from -- see get_changed_line_ranges() below for the structural
+    (non-prompt-dependent) half of this fix."""
+    if not files:
+        return ""
+    try:
+        result = subprocess.run(
+            ["git", "diff", f"--unified={context_lines}", f"{base_ref}...HEAD", "--", *files],
+            capture_output=True, text=True, check=True, cwd=project_root,
+        )
+        return result.stdout
+    except subprocess.CalledProcessError as e:
+        print(f"[agent] git diff (patch text) failed: {e.stderr.strip()}", file=sys.stderr)
+        return ""
+
+
+_HUNK_HEADER_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
+
+
+def get_changed_line_ranges(base_ref: str, files: List[str],
+                             project_root: str = ".") -> Dict[str, Set[int]]:
+    """Return, per file, the set of new-file line numbers actually
+    touched (added or modified) by the diff against base_ref -- parsed
+    from unified diff hunk headers (`@@ -a,b +c,d @@`; the `+c,d` part is
+    the new-file line range for that hunk), independent of what content
+    was actually sent to any AI provider.
+
+    Uses --unified=0 (zero context lines) specifically so every reported
+    line in a hunk is a genuinely added/modified line, not a context line
+    that would otherwise pollute the range -- unlike get_diff_text() above,
+    which deliberately keeps context for human/AI readability.
+
+    This is the STRUCTURAL half of the diff-scoping fix (see review_code()'s
+    severity-demotion pass): a prompt instruction alone is not reliable
+    enough to keep a small/free-tier model from flagging pre-existing code
+    at CRITICAL/HIGH severity (jarvis-infra issues #306/#307/#310, all
+    fabricated or escalated findings against code outside the diff despite
+    already being asked for a "thorough" review) -- this function gives
+    review_code() a ground-truth answer to check the AI's claims against,
+    computed the same way regardless of how well any given provider follows
+    instructions.
+
+    A hunk with a zero new-line count (`+c,0`, a pure deletion at that
+    position) contributes nothing to the range -- there's no added/modified
+    line to flag there."""
+    ranges: Dict[str, Set[int]] = {}
+    if not files:
+        return ranges
+    try:
+        result = subprocess.run(
+            ["git", "diff", "--unified=0", f"{base_ref}...HEAD", "--", *files],
+            capture_output=True, text=True, check=True, cwd=project_root,
+        )
+    except subprocess.CalledProcessError as e:
+        print(f"[agent] git diff (line ranges) failed: {e.stderr.strip()}", file=sys.stderr)
+        return ranges
+
+    current_file = None
+    for line in result.stdout.splitlines():
+        if line.startswith("+++ "):
+            # "+++ b/path/to/file" (or "+++ /dev/null" for a pure deletion,
+            # which correctly yields no entry -- nothing to scope a
+            # CRITICAL/HIGH finding against in a file that no longer exists).
+            path = line[4:]
+            current_file = path[2:] if path.startswith("b/") else (
+                None if path == "/dev/null" else path
+            )
+            if current_file is not None:
+                ranges.setdefault(current_file, set())
+            continue
+        if line.startswith("@@") and current_file is not None:
+            m = _HUNK_HEADER_RE.match(line)
+            if m:
+                start = int(m.group(1))
+                count = int(m.group(2)) if m.group(2) is not None else 1
+                if count > 0:
+                    ranges[current_file].update(range(start, start + count))
+    return ranges
 
 
 def read_file_contents(files: List[str], project_root: str = ".") -> dict[str, str]:
@@ -151,9 +240,11 @@ def run(
     language = detect_language(changed)
     print(f"[agent] Language detected: {language} | Files to review: {', '.join(changed)}")
 
-    # ── 2. Read file contents ──────────────────────────────────────────
+    # ── 2. Read file contents + real diff boundary ─────────────────────
     file_contents = read_file_contents(changed, project_root=project_root)
     existing_tests = find_existing_tests(changed) if language == "python" else {}
+    diff_text = get_diff_text(base_ref, changed, project_root=project_root)
+    changed_line_ranges = get_changed_line_ranges(base_ref, changed, project_root=project_root)
 
     # ── 3. Static analysis ────────────────────────────────────────────
     print(f"[agent] Running static analysis for {language}...")
@@ -176,6 +267,8 @@ def run(
             repo_name=config.GITHUB_REPOSITORY,
             language=language,
             repo_config=repo_config,
+            diff_text=diff_text,
+            changed_line_ranges=changed_line_ranges,
         )
         tests_future = (
             pool.submit(generate_tests, file_contents, existing_tests, language)
