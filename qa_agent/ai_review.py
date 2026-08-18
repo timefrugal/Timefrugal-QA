@@ -399,6 +399,8 @@ def review_code(
     repo_name: str = "",
     language: str = "python",
     repo_config: Optional[RepoConfig] = None,
+    diff_text: str = "",
+    changed_line_ranges: Optional[dict[str, set]] = None,
 ) -> AIReview:
     """
     Send changed file contents + static analysis findings to the configured
@@ -406,6 +408,20 @@ def review_code(
     with unparseable JSON is treated the same as a transport failure and
     the chain advances to the next configured provider -- see
     _parse_review_json. Returns structured AIReview.
+
+    diff_text / changed_line_ranges (both new, both optional/backward-
+    compatible -- existing callers that don't pass them get the prior
+    behavior unchanged): the real `git diff` for this PR, in two forms.
+    diff_text is included in the prompt so the model has an actual diff
+    boundary to reason from (see agent.py's get_diff_text()).
+    changed_line_ranges is the STRUCTURAL half of the same fix -- a
+    per-file set of new-file line numbers the diff actually touched
+    (agent.py's get_changed_line_ranges()), used AFTER the AI responds to
+    demote any CRITICAL/HIGH finding whose file:line isn't actually in
+    this PR's diff, regardless of how well the model followed the prompt
+    instruction. See _demote_if_outside_diff()'s own docstring for
+    why both halves matter -- prompt-only was not reliable enough on its
+    own (jarvis-infra issues #306/#307/#310).
     """
     review = AIReview(ai_blocking=bool(repo_config.ai_blocking) if repo_config else False)
 
@@ -423,15 +439,60 @@ def review_code(
 
     static_summary = _format_static_for_ai(static_results)
 
-    user_msg = f"""Repository: {repo_name or "unknown"}
+    # Everything diff-dependent below (the diff section itself, the
+    # "pre-existing code" instruction, and the closing sentence's
+    # diff-aware wording) is gated on `diff_text` being non-empty and
+    # NOT hoisted out unconditionally -- review found this exact bug
+    # before merge: an earlier version of this fix always told the model
+    # changed-file content was "pre-existing, cap at MEDIUM" even when NO
+    # diff was actually shown to justify that (diff_text="" -- the
+    # default for any caller that hasn't been updated, and also
+    # agent.py's own get_diff_text() fallback when `git diff` itself
+    # fails). That's not backward-compatible at all -- it's a silent
+    # instruction to under-report genuinely new CRITICAL/HIGH issues on
+    # exactly the paths this fix is supposed to leave untouched. When
+    # diff_text is empty, the diff section, the pre-existing-code framing,
+    # and the closing sentence all fall back to the pre-fix wording
+    # exactly -- true backward compatibility for the claims that need
+    # diff evidence to be justified, not just an assertion of it. (The
+    # static-analysis "don't escalate" instruction just below stays
+    # unconditional even with no diff -- it doesn't claim anything about
+    # what is or isn't part of this PR, so it needs no diff evidence to
+    # be a valid instruction either way.)
+    if diff_text:
+        diff_cap = config.AI_MAX_DIFF_CHARS
+        truncated_diff = diff_text[:diff_cap] + ("\n... [diff truncated]" if len(diff_text) > diff_cap else "")
+        diff_section = f"""
+## Diff (what this PR actually changed)
+This is the ONLY content that should drive a CRITICAL or HIGH finding.
+```diff
+{truncated_diff}
+```
+"""
+        changed_files_header = """## Changed Files (full content, for context)
+Code shown here that does NOT appear in the diff above is PRE-EXISTING --
+it predates this PR. Do not report pre-existing code at CRITICAL or HIGH
+severity; MEDIUM or lower only, as a suggestion, not a blocker."""
+        closing_instruction = ("Please perform a thorough code review of the changed files above, using "
+                                "the diff to distinguish newly-introduced issues (report at their real "
+                                "severity) from pre-existing code shown only for context (MEDIUM or lower).")
+    else:
+        diff_section = ""
+        changed_files_header = "## Changed Files"
+        closing_instruction = "Please perform a thorough code review of the changed files above."
 
-## Changed Files
+    user_msg = f"""Repository: {repo_name or "unknown"}
+{diff_section}
+{changed_files_header}
 {chr(10).join(code_sections)}
 
 ## Static Analysis Pre-scan Results
+These are real findings from real tools, already at their own real
+severity. If you agree with one, report it at THAT severity -- do not
+restate it at a higher severity than shown here.
 {static_summary}
 
-Please perform a thorough code review of the changed files above.
+{closing_instruction}
 """
 
     def _make_request(client: OpenAI, model: str) -> dict:
@@ -507,16 +568,65 @@ Please perform a thorough code review of the changed files above.
     review.architecture_notes = data.get("architecture_notes", "")
 
     for item in data.get("findings", []):
-        review.findings.append(AIFinding(
+        finding = AIFinding(
             severity=_validate_severity(item.get("severity", config.SEVERITY_INFO)),
             category=item.get("category", "quality"),
             file=item.get("file", ""),
             line=item.get("line", 0),
             message=item.get("message", ""),
             suggestion=item.get("suggestion", ""),
-        ))
+        )
+        review.findings.append(_demote_if_outside_diff(finding, changed_line_ranges))
 
     return review
+
+
+def _demote_if_outside_diff(finding: AIFinding,
+                             changed_line_ranges: Optional[dict[str, set]]) -> AIFinding:
+    """Structural guard, independent of prompt-following: a CRITICAL/HIGH
+    finding whose file:line isn't inside this PR's actual diff (per real
+    `git diff` hunk ranges computed by agent.py's get_changed_line_ranges(),
+    NOT per what the model was told or claims) gets demoted to MEDIUM --
+    kept visible as a suggestion, stripped of its blocking power
+    (AIReview.has_blocking_issues only checks CRITICAL/HIGH).
+
+    Why this exists as CODE, not just the new prompt instruction above:
+    jarvis-infra issues #306/#307/#310 all showed real free-tier AI
+    reviewers fabricating or escalating Critical/High findings against
+    code entirely outside the diff under review, despite this file's
+    system prompt already asking for a "thorough" review -- a prompt
+    instruction alone is not reliable enough for a small/free model to
+    honor consistently on a decision that blocks a merge. This applies
+    the same principle AIReview.has_blocking_issues already applies at a
+    coarser grain (see that property's own comment: "AI findings
+    shouldn't independently block with unvalidated severity") one level
+    deeper, per individual finding rather than the whole review.
+
+    changed_line_ranges being None -- an older/other caller that hasn't
+    been updated to compute it, backward-compatible default -- means this
+    guard has nothing to check against, so findings pass through
+    unchanged rather than mass-demoting everything. An empty range for a
+    specific file that IS present in the dict (e.g. a rename or a
+    deletion-only diff for that file) means the diff genuinely touched no
+    line there, so any CRITICAL/HIGH claim about it is demoted. A finding
+    at line 0 ("uncertain", per this file's own JSON schema instructions
+    telling the model not to hallucinate a line number) can't be verified
+    either and is demoted for the identical unvalidated-severity reason."""
+    if changed_line_ranges is None:
+        return finding
+    if finding.severity not in (config.SEVERITY_CRITICAL, config.SEVERITY_HIGH):
+        return finding
+    file_ranges = changed_line_ranges.get(finding.file)
+    if file_ranges and finding.line in file_ranges:
+        return finding
+    return AIFinding(
+        severity=config.SEVERITY_MEDIUM,
+        category=finding.category,
+        file=finding.file,
+        line=finding.line,
+        message=f"[demoted from {finding.severity}: outside this PR's diff] {finding.message}",
+        suggestion=finding.suggestion,
+    )
 
 
 def generate_tests(

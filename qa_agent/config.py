@@ -43,6 +43,19 @@ AI_MAX_TOKENS = int(os.getenv("QA_AI_MAX_TOKENS", "3000"))
 # minute, so this is deliberately conservative for a single call.
 AI_MAX_TOTAL_CONTENT_CHARS = int(os.getenv("QA_AI_MAX_TOTAL_CONTENT_CHARS", "16000"))
 
+# Character budget for the unified diff text sent alongside (not instead
+# of) the truncated full-file content above -- a separate, additive cap,
+# not carved out of AI_MAX_TOTAL_CONTENT_CHARS. Added to fix a real,
+# repeatedly-observed failure mode (jarvis-infra issues #306/#307/#310):
+# without ANY diff boundary in the prompt, review_code() previously sent
+# only full (truncated) file content, giving the AI reviewer no way to
+# tell newly-introduced lines from code that predates the PR by months --
+# it would routinely misattribute or escalate pre-existing static-analysis
+# findings as fabricated new CRITICAL/HIGH issues. Diffs are normally far
+# smaller than full files, so 8000 is generous for most real PRs while
+# still bounded for a very large diff.
+AI_MAX_DIFF_CHARS = int(os.getenv("QA_AI_MAX_DIFF_CHARS", "8000"))
+
 # Retry settings for rate-limit errors (HTTP 429)
 AI_RETRY_MAX_ATTEMPTS = int(os.getenv("QA_AI_RETRY_MAX_ATTEMPTS", "3"))
 AI_RETRY_BASE_DELAY = float(os.getenv("QA_AI_RETRY_BASE_DELAY", "5.0"))  # seconds; doubles each attempt
