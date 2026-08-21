@@ -16,7 +16,7 @@
 # Options:
 #   --base <branch>   Base branch to diff against (default: main)
 #   --no-tests        Skip AI test generation (faster)
-#   --model <name>    Override AI model (default: llama-3.3-70b-versatile)
+#   --model <name>    Override AI model (default: openai/gpt-oss-120b)
 # ─────────────────────────────────────────────────────────────────────────────
 
 set -euo pipefail
