@@ -11,7 +11,11 @@ import requests
 
 from qa_agent import config
 from qa_agent.ai_review import AIReview
-from qa_agent.static_analysis import AnalysisResults
+from qa_agent.static_analysis import (
+    AnalysisResults,
+    blocking_severity_label,
+    effective_block_threshold,
+)
 
 
 SEVERITY_EMOJI = {
@@ -155,8 +159,10 @@ def _build_comment(
 ) -> str:
     blocked = static.has_blocking_issues or ai.has_blocking_issues
     errored = bool(static.errors or ai.errors)
+    threshold = effective_block_threshold(static, ai.has_blocking_issues)
     status_line = (
-        "## 🔴 Timefrugal-QA — BLOCKED: Critical/High issues require attention before merge"
+        f"## 🔴 Timefrugal-QA — BLOCKED: {blocking_severity_label(threshold)} "
+        "issues require attention before merge"
         + (
             " (Note: some analysis tools also failed to complete — see Tool Warnings below.)"
             if errored
@@ -173,6 +179,9 @@ def _build_comment(
         status_line,
         "",
     ]
+    note = _threshold_source_note(static, threshold)
+    if note:
+        parts += [note, ""]
 
     # AI summary
     if ai.summary:
@@ -288,6 +297,30 @@ def _build_comment(
 # ──────────────────────────────────────────────
 # Helpers
 # ──────────────────────────────────────────────
+
+def _threshold_source_note(static: AnalysisResults, threshold: Optional[str]) -> str:
+    """One-line explanation of a stricter-than-default blocking cutoff, or ""
+    when there's nothing surprising to explain (not blocked, or blocked at the
+    CRITICAL/HIGH cutoff the header wording already conveys).
+
+    Without this, a reader of a stricter repo's report sees "BLOCKED:
+    Medium-or-above" above a table of 0 Critical / 0 High and has no way to
+    tell a deliberate per-repo config from a broken gate -- which is exactly
+    how jarvis-infra#323 came to be filed against a correctly-working gate.
+    """
+    if not threshold or threshold in (config.SEVERITY_CRITICAL, config.SEVERITY_HIGH):
+        return ""
+    source = (
+        "`block_merge_threshold` in this repo's `.timefrugal-qa.yml`"
+        if static.block_merge_threshold
+        else "the `QA_BLOCK_MERGE_THRESHOLD` environment variable"
+    )
+    return (
+        f"_This repo gates merges at **{threshold}** severity and above (set by "
+        f"{source}) — stricter than the {config.SEVERITY_HIGH} default, so the "
+        f"findings below block even with no Critical/High present._"
+    )
+
 
 def _find_existing_comment(repo: str, pr_number: str) -> Optional[int]:
     """Find an existing Timefrugal-QA comment on the PR to update instead of posting a new one."""

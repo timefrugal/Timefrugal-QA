@@ -13,7 +13,11 @@ from rich.syntax import Syntax
 
 from qa_agent import config
 from qa_agent.ai_review import AIReview
-from qa_agent.static_analysis import AnalysisResults
+from qa_agent.static_analysis import (
+    AnalysisResults,
+    blocking_severity_label,
+    effective_block_threshold,
+)
 
 # legacy_windows=False forces ANSI mode on Windows, avoiding cp1252 UnicodeEncodeError with emoji
 console = Console(legacy_windows=False)
@@ -43,9 +47,20 @@ def print_report(
 ) -> None:
     """Print a rich, colored QA report to the terminal."""
     blocked = static_results.has_blocking_issues or ai_review.has_blocking_issues
+    # Same accuracy fix as pr_reporter's BLOCKED header (jarvis-infra#323):
+    # "critical/high" was hardcoded here too, and is wrong on any repo whose
+    # .timefrugal-qa.yml sets a stricter block_merge_threshold. Lowercased so
+    # the default-threshold wording stays byte-identical to before.
+    severity_label = blocking_severity_label(
+        effective_block_threshold(static_results, ai_review.has_blocking_issues)
+    ).lower()
 
     # Header panel
-    status_text = "BLOCKED — Fix critical/high issues before raising a PR" if blocked else "PASSED — Safe to raise a PR"
+    status_text = (
+        f"BLOCKED — Fix {severity_label} issues before raising a PR"
+        if blocked
+        else "PASSED — Safe to raise a PR"
+    )
     status_style = "bold red" if blocked else "bold green"
     console.print(Panel(
         Text(f"Timefrugal-QA  ·  {status_text}", style=status_style),
