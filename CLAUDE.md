@@ -108,7 +108,7 @@ Method: full read of `qa_agent/*.py`, both workflows, `scripts/`, `templates/`, 
 | `QA_FALLBACK_BASE_URL` | Optional | Base URL for the 4th, last-resort fallback provider (e.g. jarvis-infra's Z13 gateway) -- must be set together with `QA_FALLBACK_API_KEY` and `QA_FALLBACK_MODEL` for this slot to activate |
 | `QA_FALLBACK_API_KEY` | Optional | Auth for the 4th, last-resort fallback provider -- only reached once Groq, Cerebras, AND Mistral have all failed/are unconfigured |
 | `QA_FALLBACK_MODEL` | Optional | Model name for the 4th, last-resort fallback provider -- no default (unlike the three named cloud providers, this slot isn't tied to a fixed service) |
-| `QA_AI_MODEL` | Optional | Override Groq model (default: `llama-3.3-70b-versatile`) |
+| `QA_AI_MODEL` | Optional | Override Groq model (default: `openai/gpt-oss-120b`) |
 | `QA_AI_MODEL_CEREBRAS` | Optional | Override Cerebras model (default: `gpt-oss-120b`) |
 | `QA_AI_MODEL_MISTRAL` | Optional | Override Mistral model (default: `mistral-small-latest`) |
 | `QA_AI_MAX_TOKENS` | Optional | Max AI response tokens (default: 3000) |
@@ -138,7 +138,7 @@ python -m qa_agent --base develop --no-tests
 python -m qa_agent --commit-tests
 
 # Use a different model on whichever provider handles the request
-python -m qa_agent --model llama-3.1-8b-instant
+python -m qa_agent --model openai/gpt-oss-20b
 ```
 
 ### All CLI flags

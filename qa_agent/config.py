@@ -10,7 +10,7 @@ import os
 # 2026-07-30 -- playground, catalog, inference API, and BYOK all gone, for
 # every customer, no exceptions. Switched to a provider chain instead of a
 # single backend, since free tiers come with real rate limits (Groq's
-# llama-3.3-70b-versatile: 12,000 TPM) that a single moderately-sized PR
+# openai/gpt-oss-120b: 8,000 TPM) that a single moderately-sized PR
 # can legitimately hit -- see ai_review.py's _call_with_fallback for the
 # fallback mechanism. Every provider here is OpenAI-SDK-compatible (same
 # base_url + api_key + chat.completions.create() shape), so adding another
@@ -18,17 +18,30 @@ import os
 # ──────────────────────────────────────────────
 AI_BASE_URL = "https://api.groq.com/openai/v1"  # kept for backward compat; AI_PROVIDERS is authoritative
 
-# Default model: llama-3.3-70b-versatile is free on Groq's tier and capable
-# enough for code review; it's the same model this org already uses
-# elsewhere (see bin/jarvis-llm-scout.py in jarvis-infra) so behavior/
-# quality expectations are already known.
-AI_MODEL = os.getenv("QA_AI_MODEL", "llama-3.3-70b-versatile")
+# Default model: openai/gpt-oss-120b is free on Groq's tier and capable
+# enough for code review. Replaced llama-3.3-70b-versatile on 2026-08-20
+# (jarvis-infra issue #309): Groq retired its entire llama chat lineup, so
+# the old tag now 404s outright -- tier 1 of the chain was silently dead on
+# every real QA run, landing every review on Cerebras or Mistral instead.
+# openai/gpt-oss-120b is Groq's own recommended general-purpose/reasoning
+# replacement, and it's the same model family already used one hop down the
+# chain (AI_MODEL_CEREBRAS) and by jarvis-infra's primary Ollama workhorse
+# (Z13/jarvis-1 Slot A), so behavior/quality expectations are a known
+# quantity. Note the "openai/" prefix: Groq namespaces this model, Cerebras
+# does not (plain "gpt-oss-120b" below) -- the two strings differ on
+# purpose, don't "fix" one to match the other. Tradeoff: Groq's free tier
+# gives it 8,000 TPM (vs the retired model's 12,000), so tier 1 has less
+# headroom than before; 429s/413s fall through to Cerebras/Mistral via
+# _call_with_fallback exactly as designed. openai/gpt-oss-20b has the same
+# 8,000 TPM, so downsizing would buy no headroom, only less capability.
+AI_MODEL = os.getenv("QA_AI_MODEL", "openai/gpt-oss-120b")
 
 # Cerebras free tier's current model lineup (gpt-oss-120b, production) --
 # same model family already used for jarvis-infra's own primary Ollama
-# workhorse (Z13/jarvis-1 Slot A), so likewise a known quantity. Cerebras'
-# free tier has 2.5x Groq's TPM ceiling (30K vs 12K) as of this writing,
-# making it a strong second hop when Groq is out of quota.
+# workhorse (Z13/jarvis-1 Slot A) and, as of 2026-08-20, by the Groq tier
+# above too, so likewise a known quantity. Cerebras' free tier has ~3.75x
+# Groq's TPM ceiling (30K vs 8K) as of this writing, making it a strong
+# second hop when Groq is out of quota.
 AI_MODEL_CEREBRAS = os.getenv("QA_AI_MODEL_CEREBRAS", "gpt-oss-120b")
 
 # Max tokens for AI responses (keep low to stay within free rate limits)
@@ -37,7 +50,9 @@ AI_MAX_TOKENS = int(os.getenv("QA_AI_MAX_TOKENS", "3000"))
 # Total character budget for changed-file content in a single AI request,
 # spread across however many files changed. A fixed per-file cap (the old
 # behavior) scales unboundedly with file count -- a 9-file PR could request
-# ~15,500 tokens against Groq's free-tier 12,000 TPM limit and 413 outright.
+# ~15,500 tokens against Groq's free-tier TPM limit (12,000 when that 413
+# actually happened; 8,000 since the 2026-08-20 model swap, so the margin
+# is tighter now, not looser) and 413 outright.
 # review_code() and generate_tests() run concurrently (agent.py's
 # ThreadPoolExecutor) and share the same per-org TPM budget within the same
 # minute, so this is deliberately conservative for a single call.

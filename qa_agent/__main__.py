@@ -64,7 +64,7 @@ def main():
     parser.add_argument(
         "--model",
         default=None,
-        help="Override the AI review model (default: llama-3.3-70b-versatile)",
+        help="Override the AI review model (default: openai/gpt-oss-120b)",
     )
 
     args = parser.parse_args()

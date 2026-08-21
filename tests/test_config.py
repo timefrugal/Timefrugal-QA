@@ -146,5 +146,32 @@ class TestFallbackProviderEnvWiring(unittest.TestCase):
         self.assertIn("QA_FALLBACK_API_KEY", str(ctx.exception))
 
 
+class TestGroqDefaultModel(unittest.TestCase):
+    """jarvis-infra issue #309: Groq retired its entire llama chat lineup,
+    so the old llama-3.3-70b-versatile default 404'd on every call -- tier 1
+    of the four-tier chain was silently dead and every real QA run started
+    at Cerebras or Mistral. Locks in the replacement tag (note the "openai/"
+    namespace prefix, which Groq requires and Cerebras does not) and the
+    QA_AI_MODEL override path that feeds AI_PROVIDERS[0]."""
+
+    def tearDown(self):
+        importlib.reload(config_module)
+
+    def test_groq_is_first_provider_and_uses_the_new_default_model(self):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("QA_AI_MODEL", None)
+            reloaded = importlib.reload(config_module)
+            self.assertEqual(reloaded.AI_MODEL, "openai/gpt-oss-120b")
+            self.assertEqual(reloaded.AI_PROVIDERS[0]["name"], "groq")
+            self.assertEqual(
+                reloaded.AI_PROVIDERS[0]["model"], "openai/gpt-oss-120b"
+            )
+
+    def test_qa_ai_model_env_override_reaches_the_groq_provider_entry(self):
+        reloaded = _reload_config_with_env({"QA_AI_MODEL": "some/other-model"})
+        self.assertEqual(reloaded.AI_MODEL, "some/other-model")
+        self.assertEqual(reloaded.AI_PROVIDERS[0]["model"], "some/other-model")
+
+
 if __name__ == "__main__":
     unittest.main()

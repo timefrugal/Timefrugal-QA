@@ -104,7 +104,7 @@ python -m qa_agent [options]
 | `--base <ref>` | Diff against a different branch or commit (e.g. `--base develop`) |
 | `--no-tests` | Skip AI test case generation |
 | `--commit-tests` | Write generated tests to `tests/` and commit them (local mode only) |
-| `--model <id>` | Override the AI model for whichever provider ends up handling the request (e.g. `--model llama-3.1-8b-instant`) |
+| `--model <id>` | Override the AI model for whichever provider ends up handling the request (e.g. `--model openai/gpt-oss-20b`) |
 | `--ci` | CI mode — posts PR comment and sets commit status instead of terminal output |
 | `--pr <number>` | PR number, used with `--ci` (set automatically in GitHub Actions) |
 | `--root <path>` | Project root directory (default: current directory) |
@@ -147,7 +147,7 @@ AI review tries providers in order — Groq first, then Cerebras, then Mistral, 
 
 | Provider | Free tier | Get a key |
 |----------|-----------|-----------|
-| [Groq](https://console.groq.com) | `llama-3.3-70b-versatile`, 12K TPM | [console.groq.com/keys](https://console.groq.com/keys) |
+| [Groq](https://console.groq.com) | `openai/gpt-oss-120b`, 8K TPM, 200K TPD | [console.groq.com/keys](https://console.groq.com/keys) |
 | [Cerebras](https://cloud.cerebras.ai) | `gpt-oss-120b`, 30K TPM, 1M TPD | [cloud.cerebras.ai](https://cloud.cerebras.ai) — free credits require adding a payment method on Cerebras' side, worth knowing before signing up |
 | [Mistral](https://console.mistral.ai) | `mistral-small-latest` ("Experiment" tier) | [console.mistral.ai](https://console.mistral.ai) — the free Experiment tier requires opting into data training on your inputs to unlock its full quota |
 | 4th: last-resort fallback (`QA_FALLBACK_*`) | Whatever you point it at | Not a named cloud service — a generic OpenAI-SDK-compatible endpoint you control (base URL, key, and model all self-supplied). Only reached once Groq, Cerebras, AND Mistral have all failed or are unconfigured. Added for consumer repos that want a self-hosted/private last resort (e.g. jarvis-infra's Z13 gateway) rather than relying purely on free cloud tiers. |
@@ -171,7 +171,7 @@ All config is via environment variables:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `QA_AI_MODEL` | `llama-3.3-70b-versatile` | Groq model (first provider in the chain) |
+| `QA_AI_MODEL` | `openai/gpt-oss-120b` | Groq model (first provider in the chain) |
 | `QA_AI_MODEL_CEREBRAS` | `gpt-oss-120b` | Cerebras model (fallback) |
 | `QA_AI_MODEL_MISTRAL` | `mistral-small-latest` | Mistral model (fallback) |
 | `QA_FALLBACK_BASE_URL` | _(none)_ | Base URL for the 4th, last-resort fallback provider — **required together with** `QA_FALLBACK_API_KEY`/`QA_FALLBACK_MODEL`; the provider is only considered configured once all three are set (a partial set is treated as unconfigured, not an error) |
