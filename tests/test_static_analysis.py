@@ -10,8 +10,15 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from qa_agent import static_analysis
-from qa_agent.static_analysis import AnalysisResults, Finding, run_all, run_pip_audit
+from qa_agent import config, static_analysis
+from qa_agent.static_analysis import (
+    AnalysisResults,
+    Finding,
+    blocking_severity_label,
+    effective_block_threshold,
+    run_all,
+    run_pip_audit,
+)
 
 
 class TestRunPipAuditIsScopedToTargetProject(unittest.TestCase):
@@ -167,6 +174,88 @@ class TestRunAllAggregatesErrorsWithoutDroppingFindings(unittest.TestCase):
         # must still be present, not silently dropped.
         self.assertIn(pylint_finding, combined.findings)
         self.assertIn(bandit_finding, combined.findings)
+
+
+class TestEffectiveBlockThresholdAndLabel(unittest.TestCase):
+    """
+    jarvis-infra#323: the PR-comment header hardcoded "Critical/High issues
+    require attention" no matter what cutoff actually fired, so a repo that
+    set `block_merge_threshold: MEDIUM` got a BLOCKED header naming severities
+    that appeared zero times in its own summary table. These cover the shared
+    helpers both reporters now derive that wording from.
+    """
+
+    def setUp(self):
+        # BLOCK_MERGE_THRESHOLD is read from QA_BLOCK_MERGE_THRESHOLD at import
+        # time; pin it so these assertions don't depend on the caller's env.
+        patcher = mock.patch.object(config, "BLOCK_MERGE_THRESHOLD", config.SEVERITY_HIGH)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _finding(self, severity, category="quality"):
+        return Finding(
+            tool="pylint", severity=severity, category=category,
+            file="a.py", line=1, message="x", rule_id="W0000",
+        )
+
+    def test_default_threshold_high_finding_keeps_critical_high_wording(self):
+        results = AnalysisResults(findings=[self._finding("HIGH")])
+        threshold = effective_block_threshold(results, ai_blocking=False)
+        self.assertEqual(threshold, "HIGH")
+        self.assertEqual(blocking_severity_label(threshold), "Critical/High")
+
+    def test_repo_configured_medium_threshold_says_medium_or_above(self):
+        results = AnalysisResults(
+            findings=[self._finding("MEDIUM")], block_merge_threshold="MEDIUM"
+        )
+        threshold = effective_block_threshold(results, ai_blocking=False)
+        self.assertEqual(threshold, "MEDIUM")
+        label = blocking_severity_label(threshold)
+        self.assertEqual(label, "Medium-or-above")
+        self.assertNotIn("Critical", label)
+
+    def test_both_sources_blocking_reports_the_broadest_cutoff(self):
+        results = AnalysisResults(
+            findings=[self._finding("MEDIUM")], block_merge_threshold="MEDIUM"
+        )
+        threshold = effective_block_threshold(results, ai_blocking=True)
+        self.assertEqual(threshold, "MEDIUM")
+        self.assertEqual(blocking_severity_label(threshold), "Medium-or-above")
+
+    def test_ai_only_block_still_says_critical_high_even_on_a_medium_repo(self):
+        results = AnalysisResults(
+            findings=[self._finding("LOW")], block_merge_threshold="MEDIUM"
+        )
+        threshold = effective_block_threshold(results, ai_blocking=True)
+        self.assertEqual(threshold, "HIGH")
+        self.assertEqual(blocking_severity_label(threshold), "Critical/High")
+
+    def test_nothing_blocking_returns_none_and_empty_label(self):
+        results = AnalysisResults(findings=[self._finding("LOW")])
+        threshold = effective_block_threshold(results, ai_blocking=False)
+        self.assertIsNone(threshold)
+        self.assertEqual(blocking_severity_label(threshold), "")
+
+    def test_critical_and_low_thresholds_get_generic_accurate_wording(self):
+        results = AnalysisResults(
+            findings=[self._finding("CRITICAL")], block_merge_threshold="CRITICAL"
+        )
+        threshold = effective_block_threshold(results, ai_blocking=False)
+        self.assertEqual(blocking_severity_label(threshold), "Critical")
+
+        results = AnalysisResults(
+            findings=[self._finding("LOW")], block_merge_threshold="LOW"
+        )
+        threshold = effective_block_threshold(results, ai_blocking=False)
+        self.assertEqual(blocking_severity_label(threshold), "Low-or-above")
+
+    def test_complexity_findings_still_never_trigger_a_threshold(self):
+        results = AnalysisResults(
+            findings=[self._finding("HIGH", category="complexity")],
+            block_merge_threshold="MEDIUM",
+        )
+        threshold = effective_block_threshold(results, ai_blocking=False)
+        self.assertIsNone(threshold)
 
 
 if __name__ == "__main__":

@@ -10,6 +10,8 @@ import unittest
 from unittest import mock
 
 from qa_agent import config, pr_reporter
+from qa_agent.ai_review import AIFinding, AIReview
+from qa_agent.static_analysis import AnalysisResults, Finding
 
 
 class _FakeResponse:
@@ -115,6 +117,92 @@ class TestSetCommitStatusLogging(unittest.TestCase):
         output = stdout.getvalue()
         self.assertIn("deadbeef", output)
         self.assertIn("success", output)
+
+
+def _static_finding(severity, category="quality"):
+    return Finding(
+        tool="pylint", severity=severity, category=category,
+        file="a.py", line=1, message="dangerous-default-value", rule_id="W0102",
+    )
+
+
+def _ai_finding(severity):
+    return AIFinding(
+        severity=severity, category="bug", file="a.py", line=1,
+        message="boom", suggestion="fix it",
+    )
+
+
+class TestBuildCommentBlockedHeader(unittest.TestCase):
+    """
+    jarvis-infra#323 regression: the BLOCKED header hardcoded "Critical/High
+    issues require attention before merge" regardless of which cutoff actually
+    fired. On jarvis-infra (`block_merge_threshold: MEDIUM`, deliberately
+    stricter because it runs live infra) PR #312 got that header above a table
+    showing 0 Critical and 0 High, which reads as a broken gate -- the issue
+    was filed against a gate that was in fact working exactly as configured.
+    The header must now name the real effective cutoff.
+    """
+
+    def setUp(self):
+        patcher = mock.patch.object(config, "BLOCK_MERGE_THRESHOLD", config.SEVERITY_HIGH)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_default_threshold_critical_high_block_keeps_todays_wording(self):
+        static = AnalysisResults(findings=[_static_finding("HIGH")])
+        ai = AIReview()
+        body = pr_reporter._build_comment(static, ai, "")
+        self.assertIn(
+            "## 🔴 Timefrugal-QA — BLOCKED: Critical/High issues require attention before merge",
+            body,
+        )
+        self.assertNotIn("gates merges at", body)
+
+    def test_medium_threshold_block_with_zero_critical_high_names_medium(self):
+        static = AnalysisResults(
+            findings=[_static_finding("MEDIUM"), _static_finding("MEDIUM")],
+            block_merge_threshold="MEDIUM",
+        )
+        ai = AIReview()
+        body = pr_reporter._build_comment(static, ai, "")
+        self.assertIn(
+            "BLOCKED: Medium-or-above issues require attention before merge", body
+        )
+        self.assertNotIn("Critical/High issues require attention", body)
+        self.assertIn("| 🔴 Critical | 0 |", body)
+        self.assertIn("| 🟠 High     | 0 |", body)
+        self.assertIn("**MEDIUM**", body)
+        self.assertIn(".timefrugal-qa.yml", body)
+
+    def test_ai_only_block_on_a_medium_repo_still_says_critical_high(self):
+        static = AnalysisResults(
+            findings=[_static_finding("LOW")], block_merge_threshold="MEDIUM"
+        )
+        ai = AIReview(findings=[_ai_finding("CRITICAL")], ai_blocking=True)
+        body = pr_reporter._build_comment(static, ai, "")
+        self.assertIn("Critical/High", body)
+        self.assertNotIn("gates merges at", body)
+
+    def test_not_blocked_path_is_unchanged(self):
+        static = AnalysisResults()
+        ai = AIReview()
+        body = pr_reporter._build_comment(static, ai, "")
+        self.assertIn("## ✅ Timefrugal-QA — All checks passed", body)
+        self.assertNotIn("BLOCKED", body)
+        self.assertNotIn("gates merges at", body)
+
+    def test_blocked_and_errored_keeps_the_tool_warnings_suffix_on_the_header(self):
+        static = AnalysisResults(
+            findings=[_static_finding("HIGH")], errors=["bandit: not found"]
+        )
+        ai = AIReview()
+        body = pr_reporter._build_comment(static, ai, "")
+        self.assertIn(
+            "BLOCKED: Critical/High issues require attention before merge "
+            "(Note: some analysis tools also failed to complete",
+            body,
+        )
 
 
 if __name__ == "__main__":

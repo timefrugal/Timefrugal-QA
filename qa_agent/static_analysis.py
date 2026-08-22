@@ -76,6 +76,64 @@ class AnalysisResults:
         return counts
 
 
+def effective_block_threshold(
+    results: AnalysisResults,
+    ai_blocking: bool = False,
+) -> Optional[str]:
+    """Return the severity cutoff that actually gated this run, or None if
+    nothing is blocking.
+
+    Two independent sources can block a merge, at different cutoffs:
+    `AnalysisResults.has_blocking_issues` uses this run's effective
+    `block_merge_threshold` (per-repo `.timefrugal-qa.yml` first, then
+    `config.BLOCK_MERGE_THRESHOLD`), while `AIReview.has_blocking_issues` is
+    always CRITICAL/HIGH. When both fire, the least-severe (broadest) of the
+    two is what a reader needs told -- it's the only cutoff that explains
+    every finding the gate reacted to.
+
+    `ai_blocking` is the caller's already-computed
+    `AIReview.has_blocking_issues`; taking the bool rather than the AIReview
+    keeps this module free of an ai_review import (ai_review imports this one).
+    """
+    levels = []
+    if results.has_blocking_issues:
+        threshold = results.block_merge_threshold or config.BLOCK_MERGE_THRESHOLD
+        # An unrecognized QA_BLOCK_MERGE_THRESHOLD can't actually reach here
+        # (has_blocking_issues indexes SEVERITY_ORDER with it first and would
+        # already have raised), but rendering a report is never the right
+        # place to blow up -- fall back to the documented default.
+        levels.append(
+            threshold if threshold in config.SEVERITY_ORDER else config.SEVERITY_HIGH
+        )
+    if ai_blocking:
+        levels.append(config.SEVERITY_HIGH)
+    if not levels:
+        return None
+    # SEVERITY_ORDER runs most- to least-severe, so the highest index is the
+    # broadest cutoff.
+    return max(levels, key=config.SEVERITY_ORDER.index)
+
+
+def blocking_severity_label(threshold: Optional[str]) -> str:
+    """Human wording for a blocking cutoff: 'Critical/High' for the HIGH
+    default, 'Medium-or-above' for a repo that configured something stricter,
+    '' for None (nothing blocking).
+
+    Reporters render this instead of hardcoding "Critical/High", which is
+    flatly wrong on a stricter-than-default repo -- jarvis-infra#323 was filed
+    because a MEDIUM-threshold block printed "Critical/High issues require
+    attention" directly above a table reading 0 Critical / 0 High, which reads
+    as a broken gate rather than a deliberate config.
+    """
+    if not threshold:
+        return ""
+    if threshold == config.SEVERITY_CRITICAL:
+        return "Critical"
+    if threshold == config.SEVERITY_HIGH:
+        return "Critical/High"
+    return f"{threshold.capitalize()}-or-above"
+
+
 # ──────────────────────────────────────────────
 # Helpers
 # ──────────────────────────────────────────────
