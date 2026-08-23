@@ -18,6 +18,7 @@ from qa_agent.static_analysis import (
     effective_block_threshold,
     run_all,
     run_pip_audit,
+    run_semgrep,
 )
 
 
@@ -110,6 +111,66 @@ class TestRunPipAuditCapturesAliases(unittest.TestCase):
                 results = run_pip_audit(tmp_dir)
 
         self.assertEqual(results.findings[0].aliases, [])
+
+
+class TestRunSemgrepSurfacesConfigErrors(unittest.TestCase):
+    """
+    Regression coverage for the bug that let python-quality.yml's invalid
+    YAML silently zero out semgrep findings for ~2.5 months: semgrep exits
+    non-zero (e.g. rc=7) on an invalid rule config, but still prints valid
+    JSON to stdout with an empty "results" list and a populated "errors"
+    array describing the config problem. The old code only checked
+    `rc == -1` before trusting stdout, so that JSON parsed fine, "results"
+    was (correctly, but misleadingly) empty, and the error describing *why*
+    was silently discarded. run_semgrep must append every reported error
+    onto results.errors instead of dropping it.
+    """
+
+    def test_config_error_is_surfaced_even_with_zero_results(self):
+        # Real shape of `semgrep scan --json` output when one config file in
+        # a --config <dir> is invalid: nonzero rc, empty "results", populated
+        # "errors" -- captured directly from a reproduction against a broken
+        # rules dir.
+        fake_output = (
+            '{"results": [], "errors": ['
+            '{"code": 5, "level": "error", "type": "SemgrepError", '
+            '"message": "Invalid YAML file rules/bad.yml:\\n\\tmapping values '
+            'are not allowed here\\n\\t  in \\"<file>\\", line 4, column 46"}, '
+            '{"code": 7, "level": "error", "type": "SemgrepError", '
+            '"message": "invalid configuration file found (1 configs were invalid)"}'
+            ']}'
+        )
+
+        def fake_run(cmd, cwd=None):
+            return 7, fake_output, ""
+
+        with mock.patch.object(static_analysis, "_run", side_effect=fake_run):
+            results = run_semgrep(["app.py"], project_root=".")
+
+        # No findings (semgrep genuinely produced none) -- but that must NOT
+        # read as "clean". Both config errors must be surfaced.
+        self.assertEqual(results.findings, [])
+        self.assertEqual(len(results.errors), 2)
+        self.assertTrue(any("Invalid YAML file" in e for e in results.errors))
+        self.assertTrue(any("invalid configuration file found" in e for e in results.errors))
+        # Follows the existing "semgrep: <message>" convention used on the
+        # rc == -1 path, for consistency in how errors render downstream.
+        for e in results.errors:
+            self.assertTrue(e.startswith("semgrep: "))
+
+    def test_clean_run_with_no_errors_key_still_works(self):
+        # A normal, fully-successful run's JSON has no "errors" key at all
+        # (or an empty one) -- must not raise or spuriously append anything.
+        fake_output = '{"results": []}'
+
+        def fake_run(cmd, cwd=None):
+            return 0, fake_output, ""
+
+        with mock.patch.object(static_analysis, "_run", side_effect=fake_run):
+            results = run_semgrep(["app.py"], project_root=".")
+
+        self.assertEqual(results.findings, [])
+        self.assertEqual(results.errors, [])
 
 
 class TestRunAllAggregatesErrorsWithoutDroppingFindings(unittest.TestCase):
