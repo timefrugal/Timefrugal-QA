@@ -15,8 +15,8 @@ rules:
 
   - id: mutable-default-arg
     pattern-either:
-      - pattern: def $FUNC(..., $ARG=[], ...): ...
-      - pattern: def $FUNC(..., $ARG={}, ...): ...
+      - pattern: 'def $FUNC(..., $ARG=[], ...): ...'
+      - pattern: 'def $FUNC(..., $ARG={}, ...): ...'
     message: >
       Mutable default argument '$ARG' is shared across all calls — mutations persist between
       invocations. Use None as the default and initialise inside the function body.

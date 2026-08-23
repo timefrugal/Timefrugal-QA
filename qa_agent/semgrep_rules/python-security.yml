@@ -66,3 +66,58 @@ rules:
     languages: [python]
     metadata:
       category: security
+
+  # Known limitations: (1) sanitizes on bare .resolve() without requiring a following
+  # is_relative_to() containment check, so "resolve() with no containment check at all" is a
+  # false negative by design (chosen to avoid false-positiving the correct fix pattern); (2) it's
+  # intraprocedural only (OSS semgrep limitation) — a join done in one function and used
+  # unsafely in a different function without a local check won't be caught.
+  - id: unresolved-base-dir-path-join
+    mode: taint
+    languages: [python]
+    severity: ERROR
+    pattern-sources:
+      - patterns:
+          - pattern-either:
+              - pattern: $BASE / $SEG
+              - pattern: os.path.join($BASE, $SEG)
+          - metavariable-regex:
+              metavariable: $BASE
+              regex: ^[A-Z][A-Z0-9_]*$
+          - metavariable-regex:
+              metavariable: $SEG
+              regex: ^(?![frbuFRBU]{0,3}["']).*$
+    pattern-sanitizers:
+      - pattern: $X.resolve()
+      - pattern: $X.is_relative_to(...)
+      - pattern: os.path.abspath(...)
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: $SINK.exists()
+              - pattern: $SINK.read_text(...)
+              - pattern: $SINK.write_text(...)
+              - pattern: $SINK.read_bytes(...)
+              - pattern: $SINK.write_bytes(...)
+              - pattern: $SINK.open(...)
+              - pattern: $SINK.glob(...)
+              - pattern: $SINK.rglob(...)
+              - pattern: $SINK.unlink(...)
+              - pattern: $SINK.mkdir(...)
+              - pattern: open($SINK, ...)
+          - focus-metavariable: $SINK
+    message: >
+      A filesystem path was built by joining a base-directory-looking variable (e.g. CACHE_DIR)
+      with another value via the `/` operator or os.path.join(), then used for a filesystem
+      read/write/exists/glob/open operation without first resolving it and verifying containment
+      (.resolve() + is_relative_to(), or an equivalent prefix check). pathlib's `/` operator (and
+      os.path.join) silently discard the base directory entirely if the joined segment is an
+      absolute path, and a ".." substring check does not catch that -- this can allow arbitrary
+      file read or write outside the intended directory. Resolve the joined path and verify it is
+      still contained within the base directory (e.g. resolved.is_relative_to(BASE.resolve()))
+      before using it.
+    metadata:
+      category: security
+      cwe: "CWE-22: Improper Limitation of a Pathname to a Restricted Directory ('Path Traversal')"
+      references:
+        - https://cwe.mitre.org/data/definitions/22.html

@@ -254,6 +254,15 @@ def run_semgrep(files: List[str], project_root: str = ".") -> AnalysisResults:
         results.errors.append("semgrep: could not parse output")
         return results
 
+    # semgrep can exit non-zero (e.g. rc=7 on an invalid rule config) while
+    # still emitting valid JSON with an empty "results" list -- silently
+    # treating that as "clean, zero findings" is exactly how a broken rule
+    # file (python-quality.yml, ~2.5 months) went unnoticed. Surface every
+    # reported error so it reaches the report instead of vanishing.
+    for err in data.get("errors", []):
+        err_msg = err.get("message", str(err)) if isinstance(err, dict) else str(err)
+        results.errors.append(f"semgrep: {err_msg}")
+
     for item in data.get("results", []):
         extra = item.get("extra", {})
         results.findings.append(Finding(
