@@ -494,6 +494,83 @@ class TestReviewCodeScopesResponseFormatToFallbackModelOnly(unittest.TestCase):
         self.assertTrue(config.QA_FALLBACK_RESPONSE_FORMAT)
 
 
+class TestReviewCodeScopesReasoningEffortToFallbackModelOnly(unittest.TestCase):
+    """
+    QA_FALLBACK_REASONING_EFFORT, when set, must replace the default
+    extra_body={"think": False} with extra_body={"reasoning_effort": <value>}
+    -- and only for QA_FALLBACK_MODEL, same scoping as response_format above.
+    Exists because think:false is not honored by every model in this slot
+    over Ollama's OpenAI-compat layer (confirmed on qwen3.8:27b,
+    Timefrugal-QA#23): it burns the whole token budget on hidden reasoning
+    and returns empty content, while an explicit reasoning_effort produces
+    real output.
+
+    Captures the real `extra_body` kwarg passed to the (stubbed) provider
+    call, going through the real review_code() -> _make_request path rather
+    than re-implementing the scoping logic under test.
+    """
+
+    def _capture_extra_body(self, model_name, fallback_model, reasoning_effort=""):
+        captured = {}
+
+        class _FakeMessage:
+            content = '{"summary": "ok", "architecture_notes": "", "findings": []}'
+
+        class _FakeChoice:
+            message = _FakeMessage()
+
+        class _FakeResponse:
+            choices = [_FakeChoice()]
+
+        class _FakeCompletions:
+            def create(self, **kwargs):
+                captured["extra_body"] = kwargs.get("extra_body")
+                return _FakeResponse()
+
+        class _FakeChat:
+            completions = _FakeCompletions()
+
+        class _FakeClient:
+            chat = _FakeChat()
+
+        def fake_call_with_fallback(make_request):
+            return make_request(_FakeClient(), model_name)
+
+        with mock.patch.object(config, "QA_FALLBACK_MODEL", fallback_model), \
+                mock.patch.object(config, "QA_FALLBACK_REASONING_EFFORT", reasoning_effort), \
+                mock.patch.object(ai_review, "_call_with_fallback", fake_call_with_fallback):
+            ai_review.review_code(
+                {"app.py": "print('hi')"},
+                AnalysisResults(),
+                repo_name="test-repo",
+                language="python",
+            )
+        return captured["extra_body"]
+
+    def test_fallback_model_defaults_to_think_false(self):
+        extra_body = self._capture_extra_body("z13-model", fallback_model="z13-model")
+        self.assertEqual(extra_body, {"think": False})
+
+    def test_fallback_model_with_reasoning_effort_set_sends_it_instead(self):
+        extra_body = self._capture_extra_body(
+            "z13-model", fallback_model="z13-model", reasoning_effort="low",
+        )
+        self.assertEqual(extra_body, {"reasoning_effort": "low"})
+
+    def test_cloud_provider_call_receives_no_extra_body_even_with_reasoning_effort_set(self):
+        extra_body = self._capture_extra_body(
+            "groq-model", fallback_model="z13-model", reasoning_effort="low",
+        )
+        self.assertIsNone(extra_body)
+
+    def test_reasoning_effort_flag_defaults_empty(self):
+        # config.QA_FALLBACK_REASONING_EFFORT itself (env-derived, not the
+        # test's own mock default) must default to "" so existing
+        # deployments keep today's think:false behavior without setting a
+        # new env var.
+        self.assertEqual(config.QA_FALLBACK_REASONING_EFFORT, "")
+
+
 def _fake_openai_client_factory(content_by_model: dict, calls: list):
     """Builds a fake replacement for ai_review.OpenAI: `OpenAI(base_url=...,
     api_key=...)` returns a client whose `.chat.completions.create(**kwargs)`

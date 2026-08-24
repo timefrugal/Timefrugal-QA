@@ -126,6 +126,20 @@ QA_FALLBACK_RESPONSE_FORMAT = os.getenv(
     "QA_FALLBACK_RESPONSE_FORMAT", "true"
 ).strip().lower() not in ("false", "0", "no")
 
+# Explicit reasoning-effort override for QA_FALLBACK_MODEL calls (review_code
+# and generate_tests), sent as extra_body={"reasoning_effort": <value>}
+# INSTEAD OF the think:false extra_body below when set. Exists because
+# think:false is not honored by every model in this slot over Ollama's
+# OpenAI-compat layer -- confirmed on qwen3.8:27b (Timefrugal-QA#23):
+# think:false burns the entire AI_MAX_TOKENS budget on hidden reasoning and
+# returns empty content (a hard parse failure), while an explicit
+# reasoning_effort="low" produces real, valid output because Ollama's
+# compat layer honors that param instead. Empty by default -- a deployment
+# whose QA_FALLBACK_MODEL already works correctly with think:false (e.g.
+# glm-4.7-flash, gemma4, this slot's original verified config) gets no
+# behavior change; only one that has hit this specific gap needs to set it.
+QA_FALLBACK_REASONING_EFFORT = os.getenv("QA_FALLBACK_REASONING_EFFORT", "").strip()
+
 # Provider chain, tried in this order by ai_review._call_with_fallback. A
 # provider whose API key env var isn't set is skipped, not an error --
 # consumer repos can add CEREBRAS_API_KEY/MISTRAL_API_KEY/QA_FALLBACK_API_KEY
