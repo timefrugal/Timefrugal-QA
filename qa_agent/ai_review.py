@@ -508,7 +508,17 @@ restate it at a higher severity than shown here.
         # unrecognized top-level "think" key sent to Groq/Cerebras/Mistral
         # could be rejected by their own strict schema validation, so this
         # must never apply to the other three providers.
-        extra_body = {"think": False} if model == config.QA_FALLBACK_MODEL else None
+        #
+        # QA_FALLBACK_REASONING_EFFORT (config.py), when set, replaces
+        # think:false with an explicit reasoning_effort instead -- see that
+        # setting's docstring for why (think:false isn't honored by every
+        # model in this slot; qwen3.8:27b is the confirmed case).
+        extra_body = (
+            {"reasoning_effort": config.QA_FALLBACK_REASONING_EFFORT}
+            if model == config.QA_FALLBACK_MODEL and config.QA_FALLBACK_REASONING_EFFORT
+            else {"think": False} if model == config.QA_FALLBACK_MODEL
+            else None
+        )
         # See _REVIEW_JSON_RESPONSE_SCHEMA's docstring for why this is
         # scoped to QA_FALLBACK_MODEL only, same reasoning/scoping as
         # extra_body above -- and ALSO gated on QA_FALLBACK_RESPONSE_FORMAT
@@ -665,6 +675,17 @@ def generate_tests(
 
     user_msg += "\nGenerate new comprehensive pytest test cases for the source code above."
 
+    def _extra_body(model: str) -> Optional[dict]:
+        # See the identical think:false / QA_FALLBACK_REASONING_EFFORT
+        # comment in review_code's _make_request above -- same reasoning,
+        # same QA_FALLBACK_MODEL scoping, applied to the test-generation
+        # call site.
+        if model != config.QA_FALLBACK_MODEL:
+            return None
+        if config.QA_FALLBACK_REASONING_EFFORT:
+            return {"reasoning_effort": config.QA_FALLBACK_REASONING_EFFORT}
+        return {"think": False}
+
     try:
         response = _call_with_fallback(lambda client, model: client.chat.completions.create(
             model=model,
@@ -674,10 +695,7 @@ def generate_tests(
             ],
             max_tokens=config.AI_MAX_TOKENS,
             temperature=0.1,
-            # See the identical think:false comment in review_code's
-            # _make_request above -- same reasoning, same QA_FALLBACK_MODEL
-            # scoping, applied to the test-generation call site.
-            extra_body={"think": False} if model == config.QA_FALLBACK_MODEL else None,
+            extra_body=_extra_body(model),
         ))
         test_code = response.choices[0].message.content or ""
         # Strip markdown fences if present
