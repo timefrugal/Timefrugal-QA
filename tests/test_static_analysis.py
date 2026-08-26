@@ -20,7 +20,9 @@ from qa_agent.static_analysis import (
     effective_block_threshold,
     run_all,
     run_eslint,
+    run_mypy,
     run_pip_audit,
+    run_pylint,
     run_semgrep,
     run_tsc,
 )
@@ -482,6 +484,82 @@ class TestRunTsc(unittest.TestCase):
 
         self.assertEqual(results.findings, [])
         self.assertIn("tsc", results.errors[0])
+
+
+class TestPylintSeverityNoLongerOverblocks(unittest.TestCase):
+    """H2 fix: pylint's broad 'E' (error) tier no longer maps to HIGH -- it
+    includes ambient-environment-dependent findings (e.g. E0401 import-error
+    when a dependency isn't installed in the scanning venv) alongside real
+    bugs. 'F' (fatal -- the file couldn't even be parsed) is a narrower,
+    genuinely severe tier and stays CRITICAL, unchanged."""
+
+    def _run_pylint_with(self, msg_type):
+        payload = json.dumps([{
+            "type": msg_type, "path": "app.py", "line": 5,
+            "message-id": "E0401" if msg_type == "error" else "X0000",
+            "message": "Unable to import 'requests'",
+        }])
+
+        def fake_run(cmd, cwd=None):
+            return 0, payload, ""
+
+        with mock.patch.object(static_analysis, "_run", side_effect=fake_run):
+            return run_pylint(["app.py"])
+
+    def test_error_tier_downgraded_to_medium(self):
+        results = self._run_pylint_with("error")
+        self.assertEqual(results.findings[0].severity, config.SEVERITY_MEDIUM)
+
+    def test_fatal_tier_still_critical(self):
+        results = self._run_pylint_with("fatal")
+        self.assertEqual(results.findings[0].severity, config.SEVERITY_CRITICAL)
+
+
+class TestMypySeverityAmbientEnvCodes(unittest.TestCase):
+    """H2 fix, mypy leg: import-not-found/import-untyped (mypy can't find the
+    imported module/its stubs at all -- almost always an ambient-environment
+    issue, the scanning venv lacking the target's real deps, not a genuine
+    type-safety bug) are downgraded to MEDIUM. A real type mismatch is a
+    genuine bug and stays HIGH -- this is NOT a blanket mypy severity
+    downgrade, only these two specific, environment-dependent codes."""
+
+    def _run_mypy_with_line(self, line):
+        def fake_run(cmd, cwd=None):
+            return 1, line, ""
+
+        with mock.patch.object(static_analysis, "_run", side_effect=fake_run):
+            return run_mypy(["app.py"])
+
+    def test_import_not_found_downgraded_to_medium(self):
+        results = self._run_mypy_with_line(
+            "app.py:3:1: error: Cannot find implementation or library stub for module named \"requests\"  [import-not-found]"
+        )
+        self.assertEqual(len(results.findings), 1)
+        self.assertEqual(results.findings[0].severity, config.SEVERITY_MEDIUM)
+        self.assertEqual(results.findings[0].rule_id, "import-not-found")
+
+    def test_import_untyped_downgraded_to_medium(self):
+        results = self._run_mypy_with_line(
+            "app.py:3:1: error: Library stubs not installed for \"yaml\"  [import-untyped]"
+        )
+        self.assertEqual(results.findings[0].severity, config.SEVERITY_MEDIUM)
+
+    def test_real_type_error_still_high(self):
+        results = self._run_mypy_with_line(
+            'app.py:10:5: error: Argument 1 to "foo" has incompatible type "str"; expected "int"  [arg-type]'
+        )
+        self.assertEqual(results.findings[0].severity, config.SEVERITY_HIGH)
+        self.assertEqual(results.findings[0].rule_id, "arg-type")
+
+    def test_severity_override_still_wins_over_ambient_env_downgrade(self):
+        repo_config = mock.Mock(severity_overrides={"mypy": {"error": config.SEVERITY_LOW}})
+
+        def fake_run(cmd, cwd=None):
+            return 1, "app.py:3:1: error: Cannot find module  [import-not-found]", ""
+
+        with mock.patch.object(static_analysis, "_run", side_effect=fake_run):
+            results = run_mypy(["app.py"], repo_config=repo_config)
+        self.assertEqual(results.findings[0].severity, config.SEVERITY_LOW)
 
 
 if __name__ == "__main__":
