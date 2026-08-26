@@ -61,6 +61,25 @@ jobs:
           if [ -f pyproject.toml ]; then pip install -e ".[dev]" 2>/dev/null || pip install -e . 2>/dev/null || true; fi
         continue-on-error: true
 
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Cache npm
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-npm-timefrugal-qa
+
+      - name: Install JS/TS analysis tools
+        run: npm install -g eslint typescript
+
+      - name: Install project JS/TS dependencies
+        run: |
+          if [ -f package-lock.json ]; then npm ci; elif [ -f package.json ]; then npm install; fi
+        continue-on-error: true
+
       - name: Run Timefrugal-QA
         env:
           GITHUB_TOKEN: ${{ github.token }}

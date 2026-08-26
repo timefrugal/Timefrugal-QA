@@ -1,6 +1,6 @@
 # Timefrugal-QA
 
-AI-powered QA agent for **Python, Java, and HTML** repositories. Runs as a GitHub Actions reusable workflow **and** locally before raising a PR — catching issues early to minimize GitHub Actions usage and avoid PR iteration loops.
+AI-powered QA agent for **Python, Java, HTML, JavaScript, and TypeScript** repositories. Runs as a GitHub Actions reusable workflow **and** locally before raising a PR — catching issues early to minimize GitHub Actions usage and avoid PR iteration loops.
 
 **Cost: $0.** Uses a chain of free-tier AI providers (Groq → Cerebras → Mistral — see below) and open-source analysis tools only. (Previously used GitHub Models, which GitHub fully retired 2026-07-30.)
 
@@ -10,10 +10,10 @@ AI-powered QA agent for **Python, Java, and HTML** repositories. Runs as a GitHu
 
 On every pull request (and optionally before raising one locally), the agent:
 
-1. **Language detection** — automatically detects whether changed files are Python, Java, or HTML and selects the appropriate toolchain
-2. **Static analysis** — runs the right tools per language: bandit/pylint/mypy/radon/pip-audit for Python; PMD for Java; htmlhint for HTML; semgrep runs on all three
+1. **Language detection** — automatically detects the dominant language among changed files (Python, Java, HTML, JavaScript, or TypeScript) and selects the appropriate toolchain
+2. **Static analysis** — runs the right tools per language: bandit/pylint/mypy/radon/pip-audit for Python; PMD for Java; htmlhint for HTML; ESLint for JavaScript/TypeScript plus `tsc --noEmit` type-checking for TypeScript; semgrep runs on all of them
 3. **AI code review** — sends the diff + static findings to the first configured AI provider (Groq, then Cerebras, then Mistral, falling back automatically if one is out of quota) with a language-specific prompt; reviews for bugs, security vulnerabilities, architecture/design issues, and performance
-4. **Test generation** — generates pytest tests for Python, JUnit 5 tests for Java (HTML skips — not applicable)
+4. **Test generation** — generates pytest tests for Python, JUnit 5 tests for Java, Jest tests for JavaScript/TypeScript (HTML skips — not applicable)
 4. **Reports** — posts a structured review comment on the PR, sets a commit status check (blocks merge if critical/high issues are found), and writes a formatted summary to the GitHub Actions step summary UI
 
 ---
@@ -196,8 +196,10 @@ Language is detected automatically from the extensions of changed files.
 | Python | `.py` | semgrep, bandit, pylint, mypy, radon, pip-audit |
 | Java | `.java` | semgrep, PMD |
 | HTML | `.html` `.htm` | semgrep, htmlhint |
+| JavaScript | `.js` `.jsx` `.mjs` `.cjs` | semgrep, ESLint |
+| TypeScript | `.ts` `.tsx` | semgrep, ESLint, tsc (type-checking) |
 
-PMD and htmlhint degrade gracefully if not installed — the agent logs a warning and continues with the remaining tools.
+PMD, htmlhint, ESLint, and tsc all degrade gracefully if not installed — the agent logs a warning and continues with the remaining tools. Note: ESLint's default parser cannot parse TypeScript syntax without the target repo configuring `@typescript-eslint/parser` itself (standard ESLint/TypeScript setup) — without it, `.ts`/`.tsx` files get a parse-error finding from ESLint instead of real lint results, though `tsc` type-checking is unaffected either way.
 
 ---
 
@@ -214,6 +216,8 @@ PMD and htmlhint degrade gracefully if not installed — the agent logs a warnin
 | [pip-audit](https://pypi.org/project/pip-audit/) | Python | Dependency vulnerability scanning |
 | [PMD](https://pmd.github.io) | Java | Static analysis — bugs, style, best practices |
 | [htmlhint](https://htmlhint.com) | HTML | Linting — accessibility, structure, security |
+| [ESLint](https://eslint.org) | JavaScript/TypeScript | Linting — quality + `eslint-plugin-security` rules |
+| [tsc](https://www.typescriptlang.org) | TypeScript | Type-checking (`--noEmit`) |
 
 ---
 

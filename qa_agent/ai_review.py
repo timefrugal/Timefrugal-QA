@@ -189,6 +189,28 @@ Your role:
 
 {_REVIEW_JSON_SCHEMA}
 """,
+    "javascript": f"""You are a senior JavaScript/Node.js engineer with 15+ years of experience reviewing production code.
+Your role:
+1. Identify bugs, logic errors, unhandled promise rejections, and edge cases
+2. Spot security vulnerabilities (unsafe eval/Function/child_process, prototype pollution, insecure regex/ReDoS, missing input validation, secrets in code, SSRF)
+3. Evaluate architecture and design — flag callback/promise misuse, tight coupling, missing abstraction where it matters
+4. Flag performance issues (blocking the event loop, unbounded concurrency, memory leaks from listeners/closures)
+5. Note missing or inadequate error handling around async code
+6. Assess testability
+
+{_REVIEW_JSON_SCHEMA}
+""",
+    "typescript": f"""You are a senior TypeScript engineer with 15+ years of experience reviewing production code.
+Your role:
+1. Identify bugs, logic errors, unhandled promise rejections, and edge cases
+2. Spot security vulnerabilities (unsafe eval/Function/child_process, prototype pollution, insecure regex/ReDoS, missing input validation, secrets in code, SSRF)
+3. Evaluate type safety — flag `any`/unsafe casts/non-null assertions that erase real guarantees, and misuse of generics
+4. Evaluate architecture and design — flag callback/promise misuse, tight coupling, missing abstraction where it matters
+5. Flag performance issues (blocking the event loop, unbounded concurrency, memory leaks from listeners/closures)
+6. Note missing or inadequate error handling around async code
+
+{_REVIEW_JSON_SCHEMA}
+""",
 }
 
 _TEST_SYSTEM_PROMPTS: dict[str, str] = {
@@ -217,6 +239,31 @@ Requirements:
 Respond with ONLY the raw Java test code, no markdown fences, no explanation.
 Start with the package declaration if present, then imports.
 """,
+    "javascript": """You are a senior JavaScript test engineer with 15+ years of experience.
+Generate comprehensive Jest test cases for the provided JavaScript code.
+
+Requirements:
+- Use Jest (describe/test/expect) and standard mocking (jest.mock/jest.fn) for external dependencies
+- Cover: happy paths, edge cases, error/rejection paths, boundary conditions, async behavior
+- Each test must have a clear description explaining what it tests
+- Tests must be runnable as-is (correct imports/requires, no placeholders)
+
+Respond with ONLY the raw JavaScript test code, no markdown fences, no explanation.
+Start with the import/require block.
+""",
+    "typescript": """You are a senior TypeScript test engineer with 15+ years of experience.
+Generate comprehensive Jest test cases (with ts-jest) for the provided TypeScript code.
+
+Requirements:
+- Use Jest (describe/test/expect) and standard mocking (jest.mock/jest.fn) for external dependencies
+- Preserve and exercise the code's real types — do not weaken types with `any` just to make a test compile
+- Cover: happy paths, edge cases, error/rejection paths, boundary conditions, async behavior
+- Each test must have a clear description explaining what it tests
+- Tests must be runnable as-is (correct imports, no placeholders)
+
+Respond with ONLY the raw TypeScript test code, no markdown fences, no explanation.
+Start with the import block.
+""",
 }
 
 
@@ -237,7 +284,10 @@ def _get_test_prompt(language: str) -> str:
     return _TEST_SYSTEM_PROMPTS.get(language, _TEST_SYSTEM_PROMPTS["python"])
 
 
-_LANG_FENCE: dict[str, str] = {"python": "python", "java": "java", "html": "html"}
+_LANG_FENCE: dict[str, str] = {
+    "python": "python", "java": "java", "html": "html",
+    "javascript": "javascript", "typescript": "typescript",
+}
 
 
 def _per_file_char_budget(file_count: int, per_file_cap: int, floor: int = 500) -> int:
