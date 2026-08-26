@@ -5,6 +5,7 @@ Uses stdlib unittest (no pytest / test framework is set up in this repo yet),
 following the convention established in tests/test_repo_config.py and
 tests/test_agent.py.
 """
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -15,10 +16,13 @@ from qa_agent.static_analysis import (
     AnalysisResults,
     Finding,
     blocking_severity_label,
+    detect_language,
     effective_block_threshold,
     run_all,
+    run_eslint,
     run_pip_audit,
     run_semgrep,
+    run_tsc,
 )
 
 
@@ -317,6 +321,167 @@ class TestEffectiveBlockThresholdAndLabel(unittest.TestCase):
         )
         threshold = effective_block_threshold(results, ai_blocking=False)
         self.assertIsNone(threshold)
+
+
+class TestDetectLanguage(unittest.TestCase):
+    """detect_language previously defaulted unconditionally to 'python' when
+    no file matched a supported extension, silently mislabeling e.g. a
+    markdown-only diff. Also covers the new javascript/typescript branches."""
+
+    def test_dominant_language_among_mixed_files(self):
+        self.assertEqual(detect_language(["a.ts", "b.ts", "c.py"]), "typescript")
+        self.assertEqual(detect_language(["a.js", "b.jsx"]), "javascript")
+        self.assertEqual(detect_language(["a.tsx", "b.py", "c.py"]), "python")
+
+    def test_typescript_extensions_recognized(self):
+        for ext in (".ts", ".tsx"):
+            self.assertEqual(detect_language([f"a{ext}"]), "typescript")
+
+    def test_javascript_extensions_recognized(self):
+        for ext in (".js", ".jsx", ".mjs", ".cjs"):
+            self.assertEqual(detect_language([f"a{ext}"]), "javascript")
+
+    def test_unsupported_extension_returns_unknown_not_python(self):
+        # Regression: this used to silently return "python" for a
+        # completely unsupported extension list (e.g. a docs-only PR).
+        self.assertEqual(detect_language(["README.md"]), "unknown")
+
+    def test_empty_file_list_returns_unknown(self):
+        self.assertEqual(detect_language([]), "unknown")
+
+
+class TestRunEslint(unittest.TestCase):
+    """run_eslint parses ESLint's --format json output into Finding objects,
+    normalizes absolute filePath to project-relative (matching every other
+    runner's path convention), and avoids the WARNING/error->HIGH
+    over-blocking mistake already fixed for semgrep (see _semgrep_severity)
+    -- except for eslint-plugin-security's own rules, which should still gate."""
+
+    def test_empty_files_short_circuits(self):
+        results = run_eslint([])
+        self.assertEqual(results.findings, [])
+        self.assertEqual(results.errors, [])
+
+    def test_parses_findings_and_normalizes_absolute_path(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            payload = json.dumps([
+                {
+                    "filePath": str(Path(tmp_dir) / "src" / "app.ts"),
+                    "messages": [
+                        {"ruleId": "no-unused-vars", "severity": 2,
+                         "message": "'x' is defined but never used.", "line": 10},
+                        {"ruleId": "security/detect-eval-with-expression", "severity": 2,
+                         "message": "eval with expression.", "line": 20},
+                        {"ruleId": None, "severity": 1,
+                         "message": "some warning with no ruleId.", "line": 30},
+                    ],
+                }
+            ])
+
+            def fake_run(cmd, cwd=None):
+                return 0, payload, ""
+
+            with mock.patch.object(static_analysis, "_run", side_effect=fake_run):
+                results = run_eslint(["src/app.ts"], project_root=tmp_dir)
+
+        self.assertEqual(results.errors, [])
+        self.assertEqual(len(results.findings), 3)
+
+        by_rule = {f.rule_id: f for f in results.findings}
+
+        # Regular quality error: NOT escalated to HIGH (over-blocking fix).
+        quality = by_rule["no-unused-vars"]
+        self.assertEqual(quality.severity, config.SEVERITY_MEDIUM)
+        self.assertEqual(quality.category, "quality")
+        self.assertEqual(quality.file, str(Path("src") / "app.ts"))  # normalized, not absolute
+
+        # eslint-plugin-security error: DOES gate at HIGH.
+        security = by_rule["security/detect-eval-with-expression"]
+        self.assertEqual(security.severity, config.SEVERITY_HIGH)
+        self.assertEqual(security.category, "security")
+
+        # Missing ruleId falls back to a stable placeholder, not a crash.
+        placeholder = by_rule["eslint-error"]
+        self.assertEqual(placeholder.severity, config.SEVERITY_LOW)  # warning, non-security
+
+    def test_severity_overrides_applied(self):
+        payload = json.dumps([
+            {"filePath": "app.js", "messages": [
+                {"ruleId": "no-console", "severity": 2, "message": "no console.", "line": 1},
+            ]}
+        ])
+
+        def fake_run(cmd, cwd=None):
+            return 0, payload, ""
+
+        repo_config = mock.Mock(severity_overrides={"eslint": {"error": config.SEVERITY_LOW}})
+        with mock.patch.object(static_analysis, "_run", side_effect=fake_run):
+            results = run_eslint(["app.js"], repo_config=repo_config)
+
+        self.assertEqual(results.findings[0].severity, config.SEVERITY_LOW)
+
+    def test_tool_not_found_reports_error_not_crash(self):
+        def fake_run(cmd, cwd=None):
+            return -1, "", "Tool not found: eslint"
+
+        with mock.patch.object(static_analysis, "_run", side_effect=fake_run):
+            results = run_eslint(["app.js"])
+
+        self.assertEqual(results.findings, [])
+        self.assertIn("eslint", results.errors[0])
+
+
+class TestRunTsc(unittest.TestCase):
+    """run_tsc only runs when the target project has its own tsconfig.json
+    (type-checking a single file with bare defaults produces noise, not
+    signal), always compiles the whole project (types span files), and
+    filters diagnostics back down to the changed files so a PR isn't blocked
+    on pre-existing errors elsewhere in the codebase."""
+
+    def test_no_tsconfig_is_silent_no_op(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            with mock.patch.object(static_analysis, "_run") as mock_run:
+                results = run_tsc(["app.ts"], project_root=tmp_dir)
+            mock_run.assert_not_called()
+
+        self.assertEqual(results.findings, [])
+        self.assertEqual(results.errors, [])
+
+    def test_parses_diagnostics_and_filters_to_changed_files_only(self):
+        tsc_output = (
+            "src/app.ts(12,5): error TS2345: Argument of type 'string' is not assignable.\n"
+            "src/unrelated.ts(3,1): error TS2304: Cannot find name 'Foo'.\n"
+        )
+
+        def fake_run(cmd, cwd=None):
+            return 2, tsc_output, ""
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            (Path(tmp_dir) / "tsconfig.json").write_text("{}")
+            with mock.patch.object(static_analysis, "_run", side_effect=fake_run):
+                results = run_tsc(["src/app.ts"], project_root=tmp_dir)
+
+        # Only the finding in a file actually passed as `files` survives --
+        # src/unrelated.ts must NOT block this PR.
+        self.assertEqual(len(results.findings), 1)
+        finding = results.findings[0]
+        self.assertEqual(finding.tool, "tsc")
+        self.assertEqual(finding.file, "src/app.ts")
+        self.assertEqual(finding.line, 12)
+        self.assertEqual(finding.rule_id, "TS2345")
+        self.assertEqual(finding.severity, config.SEVERITY_HIGH)
+
+    def test_tool_not_found_reports_error_not_crash(self):
+        def fake_run(cmd, cwd=None):
+            return -1, "", "Tool not found: tsc"
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            (Path(tmp_dir) / "tsconfig.json").write_text("{}")
+            with mock.patch.object(static_analysis, "_run", side_effect=fake_run):
+                results = run_tsc(["app.ts"], project_root=tmp_dir)
+
+        self.assertEqual(results.findings, [])
+        self.assertIn("tsc", results.errors[0])
 
 
 if __name__ == "__main__":

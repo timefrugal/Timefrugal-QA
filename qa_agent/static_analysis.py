@@ -1,8 +1,11 @@
 """
-Static analysis runner — executes bandit, semgrep, pylint, mypy, radon, pip-audit.
+Static analysis runner — executes bandit, semgrep, pylint, mypy, radon,
+pip-audit, pmd, htmlhint, eslint, tsc.
 Returns structured findings; never raises on tool failure (graceful degradation).
 """
 import json
+import os
+import re
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -17,8 +20,19 @@ _SEMGREP_RULES_DIR = Path(__file__).parent / "semgrep_rules"
 
 
 def detect_language(files: List[str]) -> str:
-    """Return the dominant language ('python', 'java', or 'html') in the file list."""
-    counts: dict[str, int] = {"python": 0, "java": 0, "html": 0}
+    """Return the dominant language ('python', 'java', 'html', 'javascript',
+    or 'typescript') in the file list.
+
+    Returns 'unknown' when none of the files match a supported extension --
+    this used to default to 'python' unconditionally, silently mislabeling
+    e.g. a markdown-only diff. Every consumer of this value already falls
+    back safely for an unrecognized key (ai_review's per-language dicts use
+    dict.get(language, X["python"])), so 'unknown' degrades the same way
+    'python' used to, just without the misleading label.
+    """
+    counts: dict[str, int] = {
+        "python": 0, "java": 0, "html": 0, "javascript": 0, "typescript": 0,
+    }
     for f in files:
         ext = Path(f).suffix.lower()
         if ext in config.PYTHON_EXTENSIONS:
@@ -27,7 +41,11 @@ def detect_language(files: List[str]) -> str:
             counts["java"] += 1
         elif ext in config.HTML_EXTENSIONS:
             counts["html"] += 1
-    return max(counts, key=lambda k: counts[k]) if any(counts.values()) else "python"
+        elif ext in config.TYPESCRIPT_EXTENSIONS:
+            counts["typescript"] += 1
+        elif ext in config.JAVASCRIPT_EXTENSIONS:
+            counts["javascript"] += 1
+    return max(counts, key=lambda k: counts[k]) if any(counts.values()) else "unknown"
 
 
 @dataclass
@@ -187,6 +205,22 @@ def _pylint_severity(msg_type: str, overrides: Optional[Dict] = None) -> str:
         "C": config.SEVERITY_INFO,        # convention
     }
     return mapping.get(key, config.SEVERITY_INFO)
+
+
+def _eslint_severity(eslint_sev: int, rule_id: str, overrides: Optional[Dict] = None) -> str:
+    # ESLint severities are 1=warning, 2=error. A blanket error->HIGH would
+    # repeat the same over-blocking mistake already fixed for semgrep's
+    # WARNING mapping (see _semgrep_severity) -- most eslint rules are style/
+    # quality, not security. eslint-plugin-security's rules (ruleId prefixed
+    # "security/") are the exception: a real detect-eval/detect-child-process
+    # finding should actually gate merges.
+    key = "error" if eslint_sev == 2 else "warning"
+    if overrides and key in overrides:
+        return overrides[key]
+    is_security_rule = rule_id.startswith("security/")
+    if eslint_sev == 2:
+        return config.SEVERITY_HIGH if is_security_rule else config.SEVERITY_MEDIUM
+    return config.SEVERITY_MEDIUM if is_security_rule else config.SEVERITY_LOW
 
 
 # ──────────────────────────────────────────────
@@ -537,6 +571,122 @@ def run_htmlhint(files: List[str], project_root: str = ".") -> AnalysisResults:
     return results
 
 
+def run_eslint(files: List[str], repo_config: Optional[RepoConfig] = None, project_root: str = ".") -> AnalysisResults:
+    """Run ESLint for JavaScript/TypeScript linting + security rules
+    (graceful degradation if not installed or unconfigured).
+
+    Requires the target project to have its own ESLint config
+    (eslint.config.js or a legacy .eslintrc*) -- without one, ESLint exits
+    non-zero with a config-resolution error rather than lint findings; that
+    surfaces as an unparseable-output error below, same graceful-degradation
+    contract every other tool here follows.
+
+    For .ts/.tsx files specifically: ESLint's default parser (espree) cannot
+    parse TypeScript syntax at all -- confirmed live, a bare `.ts` file with
+    no @typescript-eslint/parser configured produces a single fatal "Parsing
+    error: Unexpected token :" finding instead of real lint results, not a
+    crash. This is standard ESLint/TypeScript ecosystem behavior (the target
+    repo must configure @typescript-eslint itself), not a bug here -- same
+    category as mypy/pylint needing the target project's own dependencies
+    installed to resolve imports meaningfully. run_tsc (below) provides real
+    type-safety checking for .ts files independent of this.
+    """
+    results = AnalysisResults()
+    if not files:
+        return results
+
+    overrides = (
+        repo_config.severity_overrides.get("eslint", {}) if repo_config else {}
+    )
+
+    cmd = [config.ESLINT_CMD, "--format", "json", "--no-error-on-unmatched-pattern"] + files
+    rc, stdout, stderr = _run(cmd, cwd=project_root)
+
+    if rc == -1:
+        results.errors.append(f"eslint: {stderr}")
+        return results
+
+    try:
+        data = json.loads(stdout or "[]")
+    except json.JSONDecodeError:
+        results.errors.append("eslint: could not parse output")
+        return results
+
+    for file_result in data:
+        raw_path = file_result.get("filePath", "")
+        # ESLint's JSON formatter reports an absolute path; every other
+        # runner here reports paths relative to project_root (files were
+        # passed in relative, cwd=project_root), so normalize to match.
+        filename = os.path.relpath(raw_path, project_root) if os.path.isabs(raw_path) else raw_path
+        for msg in file_result.get("messages", []):
+            rule_id = msg.get("ruleId") or "eslint-error"
+            results.findings.append(Finding(
+                tool="eslint",
+                severity=_eslint_severity(msg.get("severity", 1), rule_id, overrides),
+                category="security" if rule_id.startswith("security/") else "quality",
+                file=filename,
+                line=msg.get("line", 0),
+                message=msg.get("message", ""),
+                rule_id=rule_id,
+            ))
+
+    return results
+
+
+def run_tsc(files: List[str], repo_config: Optional[RepoConfig] = None, project_root: str = ".") -> AnalysisResults:
+    """Run the TypeScript compiler in --noEmit mode as a type-check gate.
+
+    Type checking needs full project context (types span files), so this
+    always compiles via the project's own tsconfig.json rather than just the
+    individual changed files -- but findings are filtered back down to
+    `files` afterward, so a PR is only blocked on type errors in files it
+    actually touched, not pre-existing errors elsewhere in the codebase.
+    Absence of tsconfig.json is a silent no-op (same pattern as
+    run_pip_audit's manifest-existence check), not an error.
+    """
+    results = AnalysisResults()
+    if not files:
+        return results
+    if not (Path(project_root) / "tsconfig.json").is_file():
+        return results
+
+    overrides = (
+        repo_config.severity_overrides.get("tsc", {}) if repo_config else {}
+    )
+    changed = {str(Path(f)) for f in files}
+
+    cmd = [config.TSC_CMD, "--noEmit", "--pretty", "false"]
+    rc, stdout, stderr = _run(cmd, cwd=project_root)
+
+    if rc == -1:
+        results.errors.append(f"tsc: {stderr}")
+        return results
+
+    # tsc has no JSON output mode; parse its plain-text diagnostic format:
+    #   path/to/file.ts(12,5): error TS2345: message
+    pattern = re.compile(r"^(.+?)\((\d+),\d+\): (error|warning) (TS\d+): (.+)$")
+    for line in stdout.splitlines():
+        m = pattern.match(line.strip())
+        if not m:
+            continue
+        filename, lineno, level, code, message = m.groups()
+        if str(Path(filename)) not in changed:
+            continue
+        severity = overrides.get(
+            level, config.SEVERITY_HIGH if level == "error" else config.SEVERITY_MEDIUM)
+        results.findings.append(Finding(
+            tool="tsc",
+            severity=severity,
+            category="types",
+            file=filename,
+            line=int(lineno),
+            message=message,
+            rule_id=code,
+        ))
+
+    return results
+
+
 # ──────────────────────────────────────────────
 # Orchestrator
 # ──────────────────────────────────────────────
@@ -548,13 +698,14 @@ def run_all(
 ) -> AnalysisResults:
     """
     Run static analysis tools appropriate for the languages present in `files`.
-    Supports Python (.py), Java (.java), and HTML (.html/.htm).
+    Supports Python (.py), Java (.java), HTML (.html/.htm), and
+    JavaScript/TypeScript (.js/.jsx/.mjs/.cjs/.ts/.tsx).
     Returns a merged AnalysisResults.
 
     `repo_config`, when provided, is used to: apply per-tool severity
-    overrides (mypy/pylint), filter out waived (tool, rule_id) findings, and
-    resolve the effective block-merge threshold. Omitting it (the default)
-    reproduces today's behavior exactly.
+    overrides (mypy/pylint/eslint/tsc), filter out waived (tool, rule_id)
+    findings, and resolve the effective block-merge threshold. Omitting it
+    (the default) reproduces today's behavior exactly.
     """
     combined = AnalysisResults()
 
@@ -562,7 +713,9 @@ def run_all(
     py_files   = [f for f in existing if Path(f).suffix.lower() in config.PYTHON_EXTENSIONS]
     java_files = [f for f in existing if Path(f).suffix.lower() in config.JAVA_EXTENSIONS]
     html_files = [f for f in existing if Path(f).suffix.lower() in config.HTML_EXTENSIONS]
-    all_supported = py_files + java_files + html_files
+    js_files   = [f for f in existing if Path(f).suffix.lower() in config.JAVASCRIPT_EXTENSIONS]
+    ts_files   = [f for f in existing if Path(f).suffix.lower() in config.TYPESCRIPT_EXTENSIONS]
+    all_supported = py_files + java_files + html_files + js_files + ts_files
 
     runners: dict = {}
     if all_supported:
@@ -577,6 +730,10 @@ def run_all(
         runners["pmd"] = lambda: run_pmd(java_files, project_root=project_root)
     if html_files:
         runners["htmlhint"] = lambda: run_htmlhint(html_files, project_root=project_root)
+    if js_files or ts_files:
+        runners["eslint"] = lambda: run_eslint(js_files + ts_files, repo_config=repo_config, project_root=project_root)
+    if ts_files:
+        runners["tsc"] = lambda: run_tsc(ts_files, repo_config=repo_config, project_root=project_root)
 
     if not runners:
         return combined

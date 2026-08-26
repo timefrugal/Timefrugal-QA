@@ -4,7 +4,7 @@
 AI-powered QA agent for Python, Java, and HTML repos. Runs as a GitHub Actions reusable workflow AND locally before raising a PR. Zero cost — uses a chain of free-tier AI providers (Groq → Cerebras → Mistral, automatic fallback, plus an optional 4th `QA_FALLBACK_*`-configured last-resort provider — see "AI provider chain" below) and open-source static analysis tools only. (Was GitHub Models until GitHub fully retired it 2026-07-30; see CHANGELOG.md [Unreleased].)
 
 **Owner:** github.com/Timefrugal  
-**Target languages:** Python, Java, HTML (auto-detected from changed file extensions)  
+**Target languages:** Python, Java, HTML, JavaScript, TypeScript (auto-detected from changed file extensions)  
 **Status:** Live and end-to-end tested (published 2026-06-11)
 
 ---
@@ -18,11 +18,11 @@ Timefrugal-QA/
 │   ├── __main__.py          # CLI: python -m qa_agent [--ci|--base|--no-tests|--commit-tests|--model]
 │   ├── config.py            # all config via env vars; AI_PROVIDERS chain (GROQ_API_KEY, CEREBRAS_API_KEY, MISTRAL_API_KEY, QA_AI_MODEL*, etc.)
 │   ├── agent.py             # orchestrator: git diff → static analysis → AI review → report
-│   ├── static_analysis.py  # language detection + per-language tool runners (parallel); Python: bandit/pylint/mypy/radon/pip-audit; Java: PMD; HTML: htmlhint; all: semgrep
+│   ├── static_analysis.py  # language detection + per-language tool runners (parallel); Python: bandit/pylint/mypy/radon/pip-audit; Java: PMD; HTML: htmlhint; JS/TS: ESLint (+tsc for TS); all: semgrep
 │   ├── semgrep_rules/
 │   │   ├── python-security.yml  # subprocess shell=True, eval/exec, pickle, hardcoded secrets, requests timeout
 │   │   └── python-quality.yml   # bare except, mutable default args
-│   ├── ai_review.py         # provider-chain fallback (Groq→Cerebras→Mistral, all OpenAI-compatible); language-aware review + test prompts (Python→pytest, Java→JUnit 5, HTML skips tests)
+│   ├── ai_review.py         # provider-chain fallback (Groq→Cerebras→Mistral, all OpenAI-compatible); language-aware review + test prompts (Python→pytest, Java→JUnit 5, JS/TS→Jest, HTML skips tests)
 │   ├── pr_reporter.py       # posts PR comment + sets commit status check via GitHub API
 │   └── local_reporter.py   # rich terminal output + saves qa_report.md
 ├── .github/workflows/
@@ -49,10 +49,10 @@ Timefrugal-QA/
 - **PR comment deduplication:** `pr_reporter.py` looks for an existing comment with the marker `<!-- timefrugal-qa-comment -->` and updates it rather than appending a new one on each push.
 - **Token budget:** AI responses capped at 3000 tokens (`QA_AI_MAX_TOKENS`) and file content truncated at 6000 chars per file to stay within free rate limits.
 - **Local-first workflow:** The intended usage pattern is run `run_local_qa.sh` → fix issues → raise PR. This minimises GitHub Actions minutes consumed.
-- **Language detection:** `detect_language()` in `static_analysis.py` counts file extensions in the changed set and returns the dominant language (`python` / `java` / `html`). Mixed-language diffs are handled by running all applicable tool sets.
-- **Per-language toolchain:** `run_all()` splits files by extension before dispatching — semgrep runs on all three; Python-only tools (bandit, pylint, mypy, radon, pip-audit) are skipped for Java/HTML; PMD runs only for `.java`; htmlhint runs only for `.html`/`.htm`. All tools degrade gracefully if not installed.
+- **Language detection:** `detect_language()` in `static_analysis.py` counts file extensions in the changed set and returns the dominant language (`python` / `java` / `html` / `javascript` / `typescript`), or `"unknown"` if none match (fixed 2026-08-26 — previously defaulted unconditionally to `"python"`, silently mislabeling e.g. a docs-only diff). Mixed-language diffs are handled by running all applicable tool sets.
+- **Per-language toolchain:** `run_all()` splits files by extension before dispatching — semgrep runs on all supported languages; Python-only tools (bandit, pylint, mypy, radon, pip-audit) are skipped for Java/HTML/JS/TS; PMD runs only for `.java`; htmlhint runs only for `.html`/`.htm`; ESLint runs for `.js`/`.jsx`/`.mjs`/`.cjs`/`.ts`/`.tsx`; `tsc --noEmit` runs only for `.ts`/`.tsx` and only if the target has its own `tsconfig.json` (whole-project compile, findings filtered back to just the changed files). All tools degrade gracefully if not installed. Note: ESLint's default parser can't parse TypeScript syntax without the target repo configuring `@typescript-eslint/parser` itself (standard ESLint/TS setup, not a bug here) — `tsc` provides real TS type-safety checking independent of that.
 - **Language-aware AI prompts:** `ai_review.py` holds separate system prompts per language. Java prompt emphasises NPE, deserialization, SSRF, generics; HTML prompt focuses on XSS, accessibility, CSP, semantic structure.
-- **Test generation scope:** Python → pytest; Java → JUnit 5 + Mockito; HTML → skipped (no applicable test framework).
+- **Test generation scope:** Python → pytest; Java → JUnit 5 + Mockito; JavaScript/TypeScript → Jest (ts-jest for TS); HTML → skipped (no applicable test framework).
 - **Custom semgrep rules:** `qa_agent/semgrep_rules/` is bundled in the package and loaded automatically alongside `--config auto`. The bundled rules target Python (`language: python`) and are silently ignored by semgrep for Java/HTML files. Add new `.yml` files to extend coverage without changing any Python code.
 - **Parallel AI calls:** `review_code` and `generate_tests` run concurrently via `ThreadPoolExecutor` in `agent.py` — cuts AI wait time ~50% when test generation is enabled.
 - **GitHub Actions step summary:** `pr_reporter.write_step_summary()` appends the report to `$GITHUB_STEP_SUMMARY` after every CI run. No-op locally (env var not set).
@@ -62,7 +62,7 @@ Timefrugal-QA/
 
 ## Known gaps / future improvements
 
-- **Go/JS support:** Currently Python/Java/HTML. `static_analysis.py` can be extended with additional language entries + `gosec`/`eslint` runners following the same pattern.
+- **Go support:** Currently Python/Java/HTML/JavaScript/TypeScript (JS/TS added 2026-08-26). `static_analysis.py` can be extended with an additional language entry + a `gosec` runner following the same pattern as `run_eslint`/`run_tsc`.
 - **GitHub org-level required workflows:** If the account is upgraded to an org, replace `setup_all_repos.sh` with a GitHub org-level required workflow setting (Settings → Actions → Required workflows). Cheaper to maintain.
 - **New repo detection:** Currently the daily `auto-setup.yml` polls all repos rather than reacting to a `repository.created` webhook — real-time triggering would require a GitHub App or org-level webhook.
 
@@ -79,9 +79,10 @@ Method: full read of `qa_agent/*.py`, both workflows, `scripts/`, `templates/`, 
 - **[MEDIUM] Whole-file scope + two-dot diff** — tools and the AI see full files, so pre-existing issues in a touched file block unrelated PRs; `get_changed_files` uses two-dot `git diff base HEAD` (`agent.py:25`), which on stale local branches also pulls in files changed only on main. Fix: three-dot/merge-base diff; longer-term filter findings to changed line ranges. Note `--root` is only honored by pip-audit — git diff and file reads use cwd (`agent.py:24-25`).
 - **[MEDIUM] Doc contradicts deployment** — "Reusable workflow pattern... tiny 15-line caller" above is not what ships: `templates/repo_workflow.yml` is an 85-line self-contained copy (its line 5: "intentionally self-contained"), so `qa-reusable.yml` is dead code — and it lacks `models: read`, so AI calls would 403 there anyway. Per-repo copies + auto-setup's skip-if-exists check (`setup_all_repos.sh:64`) mean old template versions are frozen forever — improvements do NOT "auto-apply to every repo" as claimed. (fixed 2026-07-18, see "Per-repo installable pattern" in Architecture decisions above; the dead `qa-reusable.yml` file referenced here has since been deleted)
 - **[MEDIUM] Local/CI parity + version drift** — locally, missing tools degrade to warnings, so local PASS ≠ CI verdict; `pyproject.toml` says 1.1.0 while `__init__.py` says 1.2.0 — cosmetic while installs track `@main`, load-bearing once pinning lands.
-- **[MEDIUM] Zero self-tests** — `find . -iname "*test*.py"` returns nothing. Highest-leverage first test: `test_run_pip_audit_is_scoped_to_target_project` — monkeypatch `_run` to capture the command, call `run_pip_audit(tmp_project)`, assert the command references the target's own dependency manifest (`-r <tmp>/requirements.txt`) and that no finding names a package absent from that manifest (e.g. `rich`/`openai` from the tool's own venv). This exact test catches the shipped bug class pre-ship.
+- **[MEDIUM] Zero self-tests** — `find . -iname "*test*.py"` returns nothing. Highest-leverage first test: `test_run_pip_audit_is_scoped_to_target_project` — monkeypatch `_run` to capture the command, call `run_pip_audit(tmp_project)`, assert the command references the target's own dependency manifest (`-r <tmp>/requirements.txt`) and that no finding names a package absent from that manifest (e.g. `rich`/`openai` from the tool's own venv). This exact test catches the shipped bug class pre-ship. (fixed — `tests/` now has a real suite, 183 tests as of the 2026-08-26 JS/TS support change, including `test_run_pip_audit_is_scoped_to_target_project` itself)
 
 ### Completed improvements
+- ~~JavaScript/TypeScript support~~ — `run_eslint`/`run_tsc` static analysis, language detection, language-aware AI review + Jest test generation, Node.js CI setup (2026-08-26; see CHANGELOG.md)
 - ~~pyproject.toml support~~ — migrated from `setup.py` (2026-06-12)
 - ~~Parallel tool execution~~ — `static_analysis.py` now uses `ThreadPoolExecutor` (2026-06-12)
 - ~~Rate limit handling~~ — exponential backoff on HTTP 429 in `ai_review.py` (2026-06-11)

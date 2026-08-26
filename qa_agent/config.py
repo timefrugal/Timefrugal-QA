@@ -228,12 +228,20 @@ PIP_AUDIT_CMD = "pip-audit"
 PYTHON_EXTENSIONS = {".py"}
 JAVA_EXTENSIONS = {".java"}
 HTML_EXTENSIONS = {".html", ".htm"}
-SUPPORTED_EXTENSIONS = PYTHON_EXTENSIONS | JAVA_EXTENSIONS | HTML_EXTENSIONS
+JAVASCRIPT_EXTENSIONS = {".js", ".jsx", ".mjs", ".cjs"}
+TYPESCRIPT_EXTENSIONS = {".ts", ".tsx"}
+SUPPORTED_EXTENSIONS = (
+    PYTHON_EXTENSIONS | JAVA_EXTENSIONS | HTML_EXTENSIONS
+    | JAVASCRIPT_EXTENSIONS | TYPESCRIPT_EXTENSIONS
+)
 
 # Java static analysis (PMD 7+)
 PMD_CMD = "pmd"
 # HTML linting
 HTMLHINT_CMD = "htmlhint"
+# JavaScript/TypeScript linting + type checking
+ESLINT_CMD = "eslint"
+TSC_CMD = "tsc"
 
 # Files/dirs to always skip
 EXCLUDE_PATTERNS = [
