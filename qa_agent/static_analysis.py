@@ -198,8 +198,15 @@ def _pylint_severity(msg_type: str, overrides: Optional[Dict] = None) -> str:
     if overrides and key in overrides:
         return overrides[key]
     mapping = {
-        "F": config.SEVERITY_CRITICAL,   # fatal
-        "E": config.SEVERITY_HIGH,        # error
+        "F": config.SEVERITY_CRITICAL,   # fatal -- file couldn't even be parsed/analyzed
+        # "E" (error) downgraded HIGH->MEDIUM (H2: severity mapping
+        # systematically over-blocks). Unlike "F", pylint's "E" tier is broad
+        # and includes ambient-environment-dependent findings (e.g. E0401
+        # import-error when a dependency simply isn't installed in the
+        # scanning venv, not the target repo's own environment) alongside
+        # genuine bugs -- same class of false-positive risk already fixed
+        # for semgrep's WARNING tier below.
+        "E": config.SEVERITY_MEDIUM,
         "W": config.SEVERITY_MEDIUM,      # warning
         "R": config.SEVERITY_LOW,         # refactor
         "C": config.SEVERITY_INFO,        # convention
@@ -355,6 +362,17 @@ def run_pylint(files: List[str], repo_config: Optional[RepoConfig] = None, proje
     return results
 
 
+# H2 fix, mypy leg: these two error codes mean mypy couldn't find the
+# imported module/its type stubs at all -- almost always because the
+# scanning venv doesn't have the target repo's own real dependencies
+# installed, not a genuine type-safety bug in the reviewed code. Same
+# ambient-environment leak class already fixed for pip-audit (see
+# run_pip_audit). Deliberately narrow (not a blanket mypy "error"->MEDIUM
+# downgrade): a real type mismatch is a genuine bug and stays HIGH, same
+# reasoning as tsc's compile errors below.
+_MYPY_AMBIENT_ENV_CODES = {"import-not-found", "import-untyped"}
+
+
 def run_mypy(files: List[str], repo_config: Optional[RepoConfig] = None, project_root: str = ".") -> AnalysisResults:
     """Run mypy for type checking."""
     results = AnalysisResults()
@@ -377,8 +395,13 @@ def run_mypy(files: List[str], repo_config: Optional[RepoConfig] = None, project
         parts = line.split(":", 4)
         if len(parts) >= 4:
             sev_word = parts[3].strip().lower()
+            message = parts[4].strip() if len(parts) > 4 else line
+            code_match = re.search(r"\[([\w-]+)\]\s*$", message)
+            error_code = code_match.group(1) if code_match else ""
             if sev_word in overrides:
                 severity = overrides[sev_word]
+            elif error_code in _MYPY_AMBIENT_ENV_CODES:
+                severity = config.SEVERITY_MEDIUM
             else:
                 severity = (
                     config.SEVERITY_HIGH if sev_word == "error"
@@ -395,8 +418,8 @@ def run_mypy(files: List[str], repo_config: Optional[RepoConfig] = None, project
                 category="types",
                 file=parts[0],
                 line=lineno,
-                message=parts[4].strip() if len(parts) > 4 else line,
-                rule_id="mypy",
+                message=message,
+                rule_id=error_code or "mypy",
             ))
 
     return results
