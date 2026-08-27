@@ -11,7 +11,7 @@ import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 
 from qa_agent import config
 from qa_agent.repo_config import RepoConfig, filter_ignored
@@ -59,6 +59,59 @@ class Finding:
     rule_id: str = ""
     context: str = ""      # surrounding code snippet (optional)
     aliases: List[str] = field(default_factory=list)  # alternate advisory IDs (e.g. pip-audit's OSV `id` is often a GHSA-* id, with the CVE only listed as an alias)
+
+
+def _demote_if_outside_diff(finding: Finding,
+                             changed_line_ranges: Optional[Dict[str, Set[int]]]) -> Finding:
+    """Structural counterpart to `ai_review._demote_if_outside_diff()` for
+    deterministic tool findings, not just AI ones: a CRITICAL/HIGH finding
+    whose file:line isn't inside this PR's actual diff (per real `git diff`
+    hunk ranges from `agent.get_changed_line_ranges()`) gets demoted to
+    MEDIUM -- kept visible as a suggestion, stripped of its blocking power
+    (`AnalysisResults.has_blocking_issues` only checks the effective
+    threshold, which defaults to CRITICAL/HIGH).
+
+    Unlike the AI-review half, a bandit/semgrep/pylint/mypy finding is never
+    hallucinated -- the underlying issue is real. This isn't about
+    distrusting the tool; it's the same principle `run_tsc` already applies
+    one grain coarser (findings outside the changed FILE set are dropped
+    entirely there) -- a PR shouldn't be blocked on pre-existing code it
+    never touched, no matter how real the finding is. Demoting rather than
+    dropping keeps it visible as technical debt instead of silently erasing
+    it, which is why this mirrors `ai_review`'s exact choice rather than
+    `run_tsc`'s drop-entirely one.
+
+    `static_analysis` importing from `agent` would be circular (`agent`
+    already imports `run_all` from here) -- this takes the already-computed
+    dict as a plain parameter instead, same as `effective_block_threshold`
+    takes `ai_blocking` as a bool rather than importing `AIReview`.
+
+    `changed_line_ranges` being None (no caller has computed it, or `run_all`
+    was invoked directly by an older/other caller) is the same
+    backward-compatible default as the AI-review version: findings pass
+    through unchanged rather than mass-demoting everything. An empty range
+    for a file present in the dict means the diff genuinely touched no line
+    there, so any CRITICAL/HIGH claim is demoted; a `line: 0` (e.g. a
+    tool-level finding with no real line number) can't be verified either
+    and is demoted for the same reason."""
+    if changed_line_ranges is None:
+        return finding
+    if finding.severity not in (config.SEVERITY_CRITICAL, config.SEVERITY_HIGH):
+        return finding
+    file_ranges = changed_line_ranges.get(finding.file)
+    if file_ranges and finding.line in file_ranges:
+        return finding
+    return Finding(
+        tool=finding.tool,
+        severity=config.SEVERITY_MEDIUM,
+        category=finding.category,
+        file=finding.file,
+        line=finding.line,
+        message=f"[demoted from {finding.severity}: outside this PR's diff] {finding.message}",
+        rule_id=finding.rule_id,
+        context=finding.context,
+        aliases=finding.aliases,
+    )
 
 
 @dataclass
@@ -718,6 +771,7 @@ def run_all(
     files: List[str],
     project_root: str = ".",
     repo_config: Optional[RepoConfig] = None,
+    changed_line_ranges: Optional[Dict[str, Set[int]]] = None,
 ) -> AnalysisResults:
     """
     Run static analysis tools appropriate for the languages present in `files`.
@@ -729,6 +783,18 @@ def run_all(
     overrides (mypy/pylint/eslint/tsc), filter out waived (tool, rule_id)
     findings, and resolve the effective block-merge threshold. Omitting it
     (the default) reproduces today's behavior exactly.
+
+    `changed_line_ranges`, when provided (`agent.get_changed_line_ranges()`'s
+    return value -- the same dict already computed for the AI-review half of
+    diff-scoping), demotes any CRITICAL/HIGH finding from bandit/semgrep/
+    pylint/mypy/pmd/htmlhint/eslint whose file:line falls outside the PR's
+    actual diff down to MEDIUM (see `_demote_if_outside_diff`'s own
+    docstring) -- these tools scan whole files, so a PR touching one line of
+    a large pre-existing file would otherwise be blocked on every
+    pre-existing finding in that entire file, not just what it changed.
+    `run_tsc` already has its own, coarser (file-level, drop-not-demote)
+    version of this same fix; omitting this parameter (the default)
+    reproduces today's behavior for every other tool exactly.
     """
     combined = AnalysisResults()
 
@@ -771,6 +837,11 @@ def run_all(
                 combined.errors.extend(result.errors)
             except Exception as exc:
                 combined.errors.append(f"{name}: unexpected error — {exc}")
+
+    if changed_line_ranges is not None:
+        combined.findings = [
+            _demote_if_outside_diff(f, changed_line_ranges) for f in combined.findings
+        ]
 
     if repo_config is not None:
         if repo_config.ignore:
