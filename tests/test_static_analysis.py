@@ -15,6 +15,7 @@ from qa_agent import config, static_analysis
 from qa_agent.static_analysis import (
     AnalysisResults,
     Finding,
+    _demote_if_outside_diff,
     blocking_severity_label,
     detect_language,
     effective_block_threshold,
@@ -560,6 +561,133 @@ class TestMypySeverityAmbientEnvCodes(unittest.TestCase):
         with mock.patch.object(static_analysis, "_run", side_effect=fake_run):
             results = run_mypy(["app.py"], repo_config=repo_config)
         self.assertEqual(results.findings[0].severity, config.SEVERITY_LOW)
+
+
+class TestDemoteIfOutsideDiff(unittest.TestCase):
+    """
+    Structural counterpart to test_ai_review.py's TestDemoteIfOutsideDiff:
+    bandit/semgrep/pylint/mypy scan whole files, so a PR touching one line
+    of a large pre-existing file (e.g. the real incident this closes --
+    a ~50-line Mika-Local PR blocked on 5 Critical findings, all on
+    pre-existing lines the PR never touched) was blocked on every
+    pre-existing finding in that entire file, not just what it changed.
+    """
+
+    def _finding(self, severity="CRITICAL", file="app.py", line=10):
+        return Finding(
+            tool="bandit", severity=severity, category="security",
+            file=file, line=line, message="dangerous thing",
+            rule_id="B602", context="os.system(cmd)",
+        )
+
+    def test_critical_finding_inside_diff_passes_through_unchanged(self):
+        finding = self._finding(severity="CRITICAL", line=10)
+        result = _demote_if_outside_diff(finding, {"app.py": {8, 9, 10, 11}})
+        self.assertIs(result, finding)
+        self.assertEqual(result.severity, "CRITICAL")
+
+    def test_high_finding_inside_diff_passes_through_unchanged(self):
+        finding = self._finding(severity="HIGH", line=10)
+        result = _demote_if_outside_diff(finding, {"app.py": {10}})
+        self.assertEqual(result.severity, "HIGH")
+
+    def test_critical_finding_outside_diff_is_demoted_to_medium(self):
+        finding = self._finding(severity="CRITICAL", line=500)
+        result = _demote_if_outside_diff(finding, {"app.py": {8, 9, 10, 11}})
+        self.assertEqual(result.severity, config.SEVERITY_MEDIUM)
+        self.assertIn("demoted from CRITICAL", result.message)
+        self.assertIn("outside this PR's diff", result.message)
+        # Original content preserved, not discarded -- still visible as
+        # technical debt, just no longer blocking.
+        self.assertIn("dangerous thing", result.message)
+        self.assertEqual(result.rule_id, "B602")
+        self.assertEqual(result.context, "os.system(cmd)")
+        self.assertEqual(result.tool, "bandit")
+
+    def test_finding_for_a_file_not_in_the_diff_at_all_is_demoted(self):
+        finding = self._finding(severity="HIGH", file="unrelated.py", line=1)
+        result = _demote_if_outside_diff(finding, {"app.py": {10}})
+        self.assertEqual(result.severity, config.SEVERITY_MEDIUM)
+
+    def test_line_zero_finding_is_demoted_even_if_file_in_diff(self):
+        finding = self._finding(severity="CRITICAL", line=0)
+        result = _demote_if_outside_diff(finding, {"app.py": {8, 9, 10, 11}})
+        self.assertEqual(result.severity, config.SEVERITY_MEDIUM)
+
+    def test_medium_and_below_findings_are_never_touched_even_outside_diff(self):
+        for severity in ("MEDIUM", "LOW", "INFO"):
+            finding = self._finding(severity=severity, line=999)
+            result = _demote_if_outside_diff(finding, {"app.py": {10}})
+            self.assertIs(result, finding)
+            self.assertEqual(result.severity, severity)
+
+    def test_none_changed_line_ranges_is_a_no_op_backward_compat(self):
+        # An older/other caller of run_all() that hasn't been updated to
+        # compute changed_line_ranges must see EXACTLY today's behavior --
+        # findings pass through unchecked, not mass-demoted.
+        finding = self._finding(severity="CRITICAL", line=999)
+        result = _demote_if_outside_diff(finding, None)
+        self.assertIs(result, finding)
+
+    def test_empty_range_for_a_file_present_in_the_dict_demotes(self):
+        finding = self._finding(severity="HIGH", file="renamed.py", line=5)
+        result = _demote_if_outside_diff(finding, {"renamed.py": set()})
+        self.assertEqual(result.severity, config.SEVERITY_MEDIUM)
+
+
+class TestRunAllDiffScopingEndToEnd(unittest.TestCase):
+    """
+    Same class of regression test as
+    TestRunAllAggregatesErrorsWithoutDroppingFindings above -- goes through
+    the real run_all() (tool dispatch AND the new demotion pass), only the
+    individual tool runners are faked.
+    """
+
+    def test_run_all_demotes_out_of_diff_findings_when_ranges_provided(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            (Path(tmp_dir) / "app.py").write_text("print('hi')\n")
+
+            in_diff = Finding(tool="bandit", severity="HIGH", category="security",
+                               file="app.py", line=10, message="real new issue")
+            out_of_diff = Finding(tool="bandit", severity="CRITICAL", category="security",
+                                   file="app.py", line=9999, message="pre-existing issue")
+
+            def fake_bandit(files, project_root="."):
+                return AnalysisResults(findings=[in_diff, out_of_diff])
+
+            with mock.patch.object(static_analysis, "run_bandit", side_effect=fake_bandit), \
+                 mock.patch.object(static_analysis, "run_semgrep", return_value=AnalysisResults()), \
+                 mock.patch.object(static_analysis, "run_pylint", return_value=AnalysisResults()), \
+                 mock.patch.object(static_analysis, "run_mypy", return_value=AnalysisResults()), \
+                 mock.patch.object(static_analysis, "run_radon", return_value=AnalysisResults()), \
+                 mock.patch.object(static_analysis, "run_pip_audit", return_value=AnalysisResults()):
+                combined = run_all(["app.py"], project_root=tmp_dir,
+                                    changed_line_ranges={"app.py": {8, 9, 10, 11}})
+
+        by_line = {f.line: f for f in combined.findings}
+        self.assertEqual(by_line[10].severity, "HIGH")
+        self.assertEqual(by_line[9999].severity, config.SEVERITY_MEDIUM)
+        self.assertIn("demoted from CRITICAL", by_line[9999].message)
+
+    def test_run_all_without_changed_line_ranges_is_unaffected(self):
+        # Omitting the new parameter entirely must reproduce today's
+        # behavior exactly -- no caller that hasn't been updated should see
+        # any change.
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            (Path(tmp_dir) / "app.py").write_text("print('hi')\n")
+            out_of_diff = Finding(tool="bandit", severity="CRITICAL", category="security",
+                                   file="app.py", line=9999, message="pre-existing issue")
+
+            with mock.patch.object(static_analysis, "run_bandit",
+                                    return_value=AnalysisResults(findings=[out_of_diff])), \
+                 mock.patch.object(static_analysis, "run_semgrep", return_value=AnalysisResults()), \
+                 mock.patch.object(static_analysis, "run_pylint", return_value=AnalysisResults()), \
+                 mock.patch.object(static_analysis, "run_mypy", return_value=AnalysisResults()), \
+                 mock.patch.object(static_analysis, "run_radon", return_value=AnalysisResults()), \
+                 mock.patch.object(static_analysis, "run_pip_audit", return_value=AnalysisResults()):
+                combined = run_all(["app.py"], project_root=tmp_dir)
+
+        self.assertEqual(combined.findings[0].severity, "CRITICAL")
 
 
 if __name__ == "__main__":

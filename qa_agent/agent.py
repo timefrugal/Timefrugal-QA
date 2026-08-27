@@ -248,7 +248,8 @@ def run(
 
     # ── 3. Static analysis ────────────────────────────────────────────
     print(f"[agent] Running static analysis for {language}...")
-    static_results = run_all(changed, project_root=project_root, repo_config=repo_config)
+    static_results = run_all(changed, project_root=project_root, repo_config=repo_config,
+                              changed_line_ranges=changed_line_ranges)
     s = static_results.summary()
     print(
         f"[agent] Static analysis complete — "
