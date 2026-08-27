@@ -563,6 +563,45 @@ class TestMypySeverityAmbientEnvCodes(unittest.TestCase):
         self.assertEqual(results.findings[0].severity, config.SEVERITY_LOW)
 
 
+class TestRunSemgrepTimeout(unittest.TestCase):
+    """
+    Regression coverage: a real PR was blocked on every single run by
+    python.boto3.security.hardcoded-token timing out against a ~40K-line
+    file under semgrep's own 5.0s-per-(rule,file) default -- and a tool
+    error is a hard CI-mode failure regardless of actual findings. Confirms
+    run_semgrep actually passes --timeout rather than relying on semgrep's
+    default.
+    """
+
+    def test_timeout_flag_passed_with_configured_value(self):
+        captured_cmd = []
+
+        def fake_run(cmd, cwd=None):
+            captured_cmd.extend(cmd)
+            return 0, '{"results": []}', ""
+
+        with mock.patch.object(static_analysis, "_run", side_effect=fake_run):
+            run_semgrep(["app.py"], project_root=".")
+
+        self.assertIn("--timeout", captured_cmd)
+        idx = captured_cmd.index("--timeout")
+        self.assertEqual(captured_cmd[idx + 1], str(config.SEMGREP_TIMEOUT_SECONDS))
+
+    def test_timeout_env_var_override(self):
+        captured_cmd = []
+
+        def fake_run(cmd, cwd=None):
+            captured_cmd.extend(cmd)
+            return 0, '{"results": []}', ""
+
+        with mock.patch.object(config, "SEMGREP_TIMEOUT_SECONDS", 60), \
+             mock.patch.object(static_analysis, "_run", side_effect=fake_run):
+            run_semgrep(["app.py"], project_root=".")
+
+        idx = captured_cmd.index("--timeout")
+        self.assertEqual(captured_cmd[idx + 1], "60")
+
+
 class TestDemoteIfOutsideDiff(unittest.TestCase):
     """
     Structural counterpart to test_ai_review.py's TestDemoteIfOutsideDiff:

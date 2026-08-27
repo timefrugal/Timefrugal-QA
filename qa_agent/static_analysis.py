@@ -322,7 +322,17 @@ def run_bandit(files: List[str], project_root: str = ".") -> AnalysisResults:
 
 
 def run_semgrep(files: List[str], project_root: str = ".") -> AnalysisResults:
-    """Run semgrep with the free community ruleset."""
+    """Run semgrep with the free community ruleset.
+
+    `--timeout` overrides semgrep's own 5.0s-per-(rule,file) default --
+    confirmed live blocking a real PR: a single taint/dataflow rule
+    (python.boto3.security.hardcoded-token) timed out against a ~40K-line
+    file on every run, and in this project's CI mode a tool_error is a hard
+    failure regardless of actual findings (see agent.py), so this silently
+    broke every PR touching that file. `--timeout-threshold` is left at
+    semgrep's own default (3) -- a genuinely pathological rule can still be
+    skipped rather than hanging the whole scan; this only gives every rule
+    more room before that safety net kicks in."""
     results = AnalysisResults()
     if not files:
         return results
@@ -332,6 +342,7 @@ def run_semgrep(files: List[str], project_root: str = ".") -> AnalysisResults:
         "--config", "auto",      # free community rules
         "--json",
         "--quiet",
+        "--timeout", str(config.SEMGREP_TIMEOUT_SECONDS),
     ]
     if _SEMGREP_RULES_DIR.is_dir():
         cmd += ["--config", str(_SEMGREP_RULES_DIR)]

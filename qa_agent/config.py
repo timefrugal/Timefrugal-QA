@@ -222,6 +222,17 @@ MYPY_CMD = "mypy"
 RADON_CMD = "radon"
 PIP_AUDIT_CMD = "pip-audit"
 
+# semgrep's own --timeout default is a hard 5.0s per (rule, file) pair --
+# confirmed live blocking a real PR: python.boto3.security.hardcoded-token
+# alone timed out against a ~40K-line file every single run (reproduced
+# consistently, not a one-off slow runner), and a tool_error is a CI-mode
+# hard failure by design (see agent.py's fail-closed-on-tool-error comment),
+# so this silently broke every PR touching that file. 30s gives real
+# dataflow/taint rules (the exact rule class most likely to need it) enough
+# room on a large file without disabling semgrep's own timeout-threshold
+# safety net (still 3 rules max before a file is skipped, semgrep's default).
+SEMGREP_TIMEOUT_SECONDS = int(os.environ.get("QA_SEMGREP_TIMEOUT_SECONDS", "30"))
+
 # ──────────────────────────────────────────────
 # Supported languages and file extensions
 # ──────────────────────────────────────────────
