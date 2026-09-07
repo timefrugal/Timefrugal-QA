@@ -267,5 +267,28 @@ class TestBuildCommentStaysUnderGitHubCommentLimit(unittest.TestCase):
         self.assertIn("Report truncated", body)
 
 
+class TestBuildCommentCreditsTheProviderThatActuallyAnswered(unittest.TestCase):
+    """Added 2026-09-07 alongside the QA_FALLBACK_MODEL retry fix -- once a
+    repo configures more than one provider (or a QA_FALLBACK_MODEL), which
+    one actually served a given review is no longer a foregone conclusion.
+    The comment must say which one it was, not silently attribute every
+    review to Groq the way the original hardcoded footer did."""
+
+    def test_provider_line_shown_when_ai_review_succeeded(self):
+        static = AnalysisResults()
+        ai = AIReview(summary="looks fine", provider="fallback", provider_model="qwen3.8:27b")
+        body = pr_reporter._build_comment(static, ai, "")
+        self.assertIn("_AI review served by **fallback** (`qwen3.8:27b`)_", body)
+        self.assertIn("AI review via fallback", body)  # footer
+        self.assertNotIn("Free AI via Groq", body)
+
+    def test_provider_line_absent_when_no_provider_succeeded(self):
+        static = AnalysisResults()
+        ai = AIReview(errors=["No configured AI provider returned valid JSON (last error: ...)"])
+        body = pr_reporter._build_comment(static, ai, "")
+        self.assertNotIn("AI review served by", body)
+        self.assertIn("· Free AI · Open-source analysis tools_", body)  # generic footer fallback
+
+
 if __name__ == "__main__":
     unittest.main()

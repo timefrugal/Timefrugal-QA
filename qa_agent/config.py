@@ -86,7 +86,7 @@ AI_RETRY_BASE_DELAY = float(os.getenv("QA_AI_RETRY_BASE_DELAY", "5.0"))  # secon
 # test (2026-09-07) found a queued request cleared and completed with a
 # real 200 within ~3-3.5 minutes of a first collision, which the original
 # unified 3-attempt/429-only retry budget had no chance of ever covering.
-AI_FALLBACK_RETRY_MAX_ATTEMPTS = int(os.getenv("QA_AI_FALLBACK_RETRY_MAX_ATTEMPTS", "24"))
+AI_FALLBACK_RETRY_MAX_ATTEMPTS = max(1, int(os.getenv("QA_AI_FALLBACK_RETRY_MAX_ATTEMPTS", "24")))
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 CEREBRAS_API_KEY = os.getenv("CEREBRAS_API_KEY", "")

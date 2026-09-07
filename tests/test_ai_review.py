@@ -284,9 +284,11 @@ class TestCallWithFallback(unittest.TestCase):
             return "ok"
 
         with mock.patch.object(config, "AI_PROVIDERS", providers):
-            result = ai_review._call_with_fallback(make_request)
+            result, provider_name, provider_model = ai_review._call_with_fallback(make_request)
 
         self.assertEqual(result, "ok")
+        self.assertEqual(provider_name, "groq")
+        self.assertEqual(provider_model, "groq-model")
         self.assertEqual(calls, ["groq-model"])  # cerebras never invoked
 
     def test_falls_back_to_next_provider_on_failure(self):
@@ -300,9 +302,11 @@ class TestCallWithFallback(unittest.TestCase):
             return "cerebras result"
 
         with mock.patch.object(config, "AI_PROVIDERS", providers):
-            result = ai_review._call_with_fallback(make_request)
+            result, provider_name, provider_model = ai_review._call_with_fallback(make_request)
 
         self.assertEqual(result, "cerebras result")
+        self.assertEqual(provider_name, "cerebras")
+        self.assertEqual(provider_model, "cerebras-model")
         self.assertEqual(calls, ["groq-model", "cerebras-model"])
 
     def test_falls_through_an_unconfigured_middle_provider(self):
@@ -320,9 +324,11 @@ class TestCallWithFallback(unittest.TestCase):
             return "mistral result"
 
         with mock.patch.object(config, "AI_PROVIDERS", providers):
-            result = ai_review._call_with_fallback(make_request)
+            result, provider_name, provider_model = ai_review._call_with_fallback(make_request)
 
         self.assertEqual(result, "mistral result")
+        self.assertEqual(provider_name, "mistral")
+        self.assertEqual(provider_model, "mistral-model")
         self.assertEqual(calls, ["groq-model", "mistral-model"])  # cerebras skipped entirely
 
     def test_raises_last_providers_error_when_all_fail(self):
@@ -382,7 +388,7 @@ class TestReviewCodePassesRepoConfigExtraInstructionsIntoSystemPrompt(unittest.T
             chat = _FakeChat()
 
         def fake_call_with_fallback(make_request):
-            return make_request(_FakeClient(), "fake-model")
+            return make_request(_FakeClient(), "fake-model"), "fake-provider", "fake-model"
 
         with mock.patch.object(ai_review, "_call_with_fallback", fake_call_with_fallback):
             ai_review.review_code(
@@ -448,7 +454,7 @@ class TestReviewCodeScopesResponseFormatToFallbackModelOnly(unittest.TestCase):
             chat = _FakeChat()
 
         def fake_call_with_fallback(make_request):
-            return make_request(_FakeClient(), model_name)
+            return make_request(_FakeClient(), model_name), "fake-provider", model_name
 
         with mock.patch.object(config, "QA_FALLBACK_MODEL", fallback_model), \
                 mock.patch.object(config, "QA_FALLBACK_RESPONSE_FORMAT", response_format_enabled), \
@@ -536,7 +542,7 @@ class TestReviewCodeScopesReasoningEffortToFallbackModelOnly(unittest.TestCase):
             chat = _FakeChat()
 
         def fake_call_with_fallback(make_request):
-            return make_request(_FakeClient(), model_name)
+            return make_request(_FakeClient(), model_name), "fake-provider", model_name
 
         with mock.patch.object(config, "QA_FALLBACK_MODEL", fallback_model), \
                 mock.patch.object(config, "QA_FALLBACK_REASONING_EFFORT", reasoning_effort), \
@@ -659,6 +665,11 @@ class TestGarbageJsonFromEarlierProviderFallsThroughToNextProvider(unittest.Test
         self.assertEqual(calls, ["groq-model", "cerebras-model"])
         self.assertEqual(review.errors, [])
         self.assertEqual(review.summary, "ok from cerebras")
+        # review.provider must reflect the provider that actually answered
+        # (cerebras), not the first one tried (groq) -- this is what makes
+        # a QA report able to say which provider was really used.
+        self.assertEqual(review.provider, "cerebras")
+        self.assertEqual(review.provider_model, "cerebras-model")
 
     def test_garbage_200_from_every_provider_still_reports_a_clear_error(self):
         # When even the LAST provider's response fails to parse, review_code
@@ -806,9 +817,11 @@ class TestFourthProviderConfiguredOrSkipped(unittest.TestCase):
             raise RuntimeError(f"{model} failed")
 
         with mock.patch.object(config, "AI_PROVIDERS", providers):
-            result = ai_review._call_with_fallback(make_request)
+            result, provider_name, provider_model = ai_review._call_with_fallback(make_request)
 
         self.assertEqual(result, "z13 result")
+        self.assertEqual(provider_name, "fallback")
+        self.assertEqual(provider_model, "fallback-model")
         self.assertEqual(calls, ["groq-model", "cerebras-model", "mistral-model", "fallback-model"])
 
     def test_fallback_provider_never_tried_if_an_earlier_provider_succeeds(self):
@@ -825,9 +838,11 @@ class TestFourthProviderConfiguredOrSkipped(unittest.TestCase):
             return "groq result"
 
         with mock.patch.object(config, "AI_PROVIDERS", providers):
-            result = ai_review._call_with_fallback(make_request)
+            result, provider_name, provider_model = ai_review._call_with_fallback(make_request)
 
         self.assertEqual(result, "groq result")
+        self.assertEqual(provider_name, "groq")
+        self.assertEqual(provider_model, "groq-model")
         self.assertEqual(calls, ["groq-model"])  # cerebras/mistral/fallback never invoked
 
 
@@ -1117,6 +1132,19 @@ class TestRetryAfterSecondsHintExtraction(unittest.TestCase):
         self.assertIsNone(_retry_after_seconds(
             _fake_api_error(openai.InternalServerError, {"retry_after_seconds": -5})
         ))
+
+    def test_hint_larger_than_cap_is_clamped_not_trusted_verbatim(self):
+        # An untrusted/misconfigured QA_FALLBACK_BASE_URL must not be able
+        # to force an arbitrarily long CI stall by returning a huge hint.
+        err = _fake_api_error(openai.InternalServerError, {"retry_after_seconds": 999999})
+        self.assertEqual(_retry_after_seconds(err), ai_review._MAX_RETRY_AFTER_SECONDS)
+
+    def test_hint_at_exactly_the_cap_is_returned_unclamped(self):
+        err = _fake_api_error(
+            openai.InternalServerError,
+            {"retry_after_seconds": ai_review._MAX_RETRY_AFTER_SECONDS},
+        )
+        self.assertEqual(_retry_after_seconds(err), ai_review._MAX_RETRY_AFTER_SECONDS)
 
 
 class TestCallWithRetry(unittest.TestCase):

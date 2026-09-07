@@ -56,6 +56,16 @@ class AIReview:
     # true` (H1: AI findings shouldn't independently block with unvalidated
     # severity). Set by review_code() from the repo_config it was given.
     ai_blocking: bool = False
+    # Which configured provider (config.AI_PROVIDERS entry name -- "groq",
+    # "cerebras", "mistral", or "fallback") and model actually answered,
+    # set by review_code() from _call_with_fallback's return. Empty when no
+    # provider succeeded (review.errors will explain why) -- added
+    # 2026-09-07 so a QA report can say which provider was used instead of
+    # leaving that unknowable after the fact, particularly relevant once a
+    # QA_FALLBACK_MODEL is configured, since which provider answers a given
+    # call is no longer a foregone conclusion.
+    provider: str = ""
+    provider_model: str = ""
 
     @property
     def has_blocking_issues(self) -> bool:
@@ -306,6 +316,14 @@ def _per_file_char_budget(file_count: int, per_file_cap: int, floor: int = 500) 
 
 _T = TypeVar("_T")
 
+# Upper bound on a server-provided retry_after_seconds hint (see
+# _retry_after_seconds below) -- an untrusted or misconfigured
+# QA_FALLBACK_BASE_URL could otherwise return an arbitrarily large value
+# and stall CI for that long. 300s (5 min) comfortably covers the real
+# collision observed live (a queued request cleared within ~3.5 minutes)
+# while still bounding the worst case.
+_MAX_RETRY_AFTER_SECONDS = 300.0
+
 
 def _retry_after_seconds(err: BaseException) -> Optional[float]:
     """Extract a server-specified retry delay from an API error's body, if
@@ -316,12 +334,14 @@ def _retry_after_seconds(err: BaseException) -> Optional[float]:
     model -- openai's client unwraps the outer "error" key into the
     exception's own .body, so this reads body directly. Returns None (the
     caller falls back to its own exponential backoff) for any provider
-    that doesn't send this hint, or sends a non-positive/non-numeric one."""
+    that doesn't send this hint, or sends a non-positive/non-numeric one.
+    Clamped to _MAX_RETRY_AFTER_SECONDS so an untrusted/misconfigured
+    provider can't force an excessively long sleep."""
     body = getattr(err, "body", None)
     if isinstance(body, dict):
         value = body.get("retry_after_seconds")
         if isinstance(value, (int, float)) and value > 0:
-            return float(value)
+            return min(float(value), _MAX_RETRY_AFTER_SECONDS)
     return None
 
 
@@ -387,14 +407,23 @@ def _configured_providers() -> List[dict]:
     return [p for p in config.AI_PROVIDERS if p.get("api_key") and p.get("base_url") and p.get("model")]
 
 
-def _call_with_fallback(make_request: Callable[[OpenAI, str], _T]) -> _T:
+def _call_with_fallback(make_request: Callable[[OpenAI, str], _T]) -> tuple[_T, str, str]:
     """Try each configured provider in order. Each provider still gets
     config.AI_RETRY_MAX_ATTEMPTS retries for its own transient/rate-limit
     errors (via _call_with_retry) before this moves on to the next
     provider -- so a single 429 doesn't burn a fallback hop, only a
     provider that's still failing after its own retries does. Raises the
     last provider's exception if every provider fails, so callers' existing
-    except-Exception handling around the whole call is unchanged."""
+    except-Exception handling around the whole call is unchanged.
+
+    Returns (result, provider_name, model) -- not just the raw result --
+    so a caller (review_code) can record which provider actually answered.
+    Added 2026-09-07: without this, there was no way to tell from a QA
+    report whether a review was served by Groq, Cerebras, Mistral, or a
+    configured QA_FALLBACK_MODEL -- which mattered concretely during a
+    live Z13-fallback test the same day, where two concurrent calls
+    (review + test generation) could and did land on different providers
+    without any way to tell which was which after the fact."""
     providers = _configured_providers()
     if not providers:
         raise ValueError(
@@ -409,7 +438,8 @@ def _call_with_fallback(make_request: Callable[[OpenAI, str], _T]) -> _T:
     for i, provider in enumerate(providers):
         client = OpenAI(base_url=provider["base_url"], api_key=provider["api_key"])
         try:
-            return _call_with_retry(lambda: make_request(client, provider["model"]))
+            result = _call_with_retry(lambda: make_request(client, provider["model"]))
+            return result, provider["name"], provider["model"]
         except Exception as e:  # pylint: disable=broad-except
             last_error = e
             remaining = [p["name"] for p in providers[i + 1:]]
@@ -647,7 +677,7 @@ restate it at a higher severity than shown here.
         return _parse_review_json(response.choices[0].message.content)
 
     try:
-        data = _call_with_fallback(_make_request)
+        data, review.provider, review.provider_model = _call_with_fallback(_make_request)
     except json.JSONDecodeError as e:
         # json.JSONDecodeError IS-A ValueError, so this must be caught
         # BEFORE the bare ValueError branch below or it'd be swallowed by
@@ -780,7 +810,7 @@ def generate_tests(
         return {"think": False}
 
     try:
-        response = _call_with_fallback(lambda client, model: client.chat.completions.create(
+        response, _, _ = _call_with_fallback(lambda client, model: client.chat.completions.create(
             model=model,
             messages=[
                 {"role": "system", "content": _get_test_prompt(language)},

@@ -219,6 +219,15 @@ def _build_comment(
     if note:
         parts += [note, ""]
 
+    # Which provider actually served the AI review -- added 2026-09-07 so
+    # a report never leaves this unknowable after the fact. Only shown
+    # once a provider actually succeeded (ai.provider set by review_code
+    # from _call_with_fallback's return); silent when AI review wasn't
+    # configured or every provider failed (ai.errors already covers that
+    # case via the Tool Warnings section below).
+    if ai.provider:
+        parts += [f"_AI review served by **{ai.provider}** (`{ai.provider_model}`)_", ""]
+
     # AI summary
     if ai.summary:
         parts += ["### 📋 Summary", ai.summary, ""]
@@ -330,9 +339,17 @@ def _build_comment(
             parts.append(f"- {e}")
         parts += ["", "</details>", ""]
 
+    # Was a hardcoded "Free AI via Groq" regardless of which provider (or
+    # whether any at all) actually served the review -- misleading once a
+    # repo configures Cerebras/Mistral/QA_FALLBACK_MODEL fallback, since
+    # any of those could be the one that actually answered. Now reflects
+    # ai.provider when a review succeeded; falls back to the original
+    # generic wording when it didn't (no AI review configured, or every
+    # provider failed -- ai.errors already covers why).
+    ai_credit = f"AI review via {ai.provider}" if ai.provider else "Free AI"
     parts.append(
         "_Powered by [Timefrugal-QA](https://github.com/Timefrugal/Timefrugal-QA) "
-        "· Free AI via Groq · Open-source analysis tools_"
+        f"· {ai_credit} · Open-source analysis tools_"
     )
 
     return _truncate_to_github_limit("\n".join(parts))
