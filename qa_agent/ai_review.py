@@ -307,17 +307,60 @@ def _per_file_char_budget(file_count: int, per_file_cap: int, floor: int = 500) 
 _T = TypeVar("_T")
 
 
+def _retry_after_seconds(err: BaseException) -> Optional[float]:
+    """Extract a server-specified retry delay from an API error's body, if
+    present. E.g. an OpenAI-compatible gateway with its own single-request
+    concurrency limit (such as an Ollama-backed QA_FALLBACK_MODEL) can
+    return 503 {"error": {"type": "inference_saturated", ...,
+    "retry_after_seconds": N}} when another request already occupies the
+    model -- openai's client unwraps the outer "error" key into the
+    exception's own .body, so this reads body directly. Returns None (the
+    caller falls back to its own exponential backoff) for any provider
+    that doesn't send this hint, or sends a non-positive/non-numeric one."""
+    body = getattr(err, "body", None)
+    if isinstance(body, dict):
+        value = body.get("retry_after_seconds")
+        if isinstance(value, (int, float)) and value > 0:
+            return float(value)
+    return None
+
+
 def _call_with_retry(fn: Callable[[], _T]) -> _T:
-    """Call fn(), retrying on HTTP 429 (rate limit) with exponential backoff."""
-    for attempt in range(config.AI_RETRY_MAX_ATTEMPTS):
+    """Call fn(), retrying on HTTP 429 (rate limit) or 5xx (server error)
+    with exponential backoff -- except when the error body carries a
+    `retry_after_seconds` hint (e.g. a QA_FALLBACK_MODEL gateway's own
+    single-concurrency "inference_saturated" response), in which case that
+    exact delay is used instead, under a separate, more generous attempt
+    budget (config.AI_FALLBACK_RETRY_MAX_ATTEMPTS).
+
+    The budgets are kept deliberately separate: an *unhinted* 5xx (or a
+    429) gets the original short, fast-failing budget
+    (config.AI_RETRY_MAX_ATTEMPTS) so a genuinely down provider still
+    fails over to the next one quickly, rather than stalling the whole
+    chain on blind backoff. A *hinted* 503 is a fundamentally stronger,
+    trustworthy signal -- the server is explicitly saying "retry me, this
+    is transient" -- so it earns a longer budget. Added after a real
+    live-fire test (2026-09-07) of Z13 as a QA_FALLBACK_MODEL provider: a
+    503 that would have succeeded within ~3 minutes (confirmed via the
+    gateway's own log -- a concurrently queued request for the very same
+    review completed with a real 200 shortly after) was instead reported
+    as a hard, unretried failure with "no more providers configured",
+    failing the whole AI review on a single transient collision."""
+    attempt = 0
+    while True:
         try:
             return fn()
-        except openai.RateLimitError:
-            if attempt == config.AI_RETRY_MAX_ATTEMPTS - 1:
+        except (openai.RateLimitError, openai.InternalServerError) as e:
+            hinted_delay = _retry_after_seconds(e)
+            max_attempts = (
+                config.AI_FALLBACK_RETRY_MAX_ATTEMPTS
+                if hinted_delay is not None
+                else config.AI_RETRY_MAX_ATTEMPTS
+            )
+            attempt += 1
+            if attempt >= max_attempts:
                 raise
-            delay = config.AI_RETRY_BASE_DELAY * (2 ** attempt)
-            time.sleep(delay)
-    raise RuntimeError("unreachable")  # satisfies type checker
+            time.sleep(hinted_delay if hinted_delay is not None else config.AI_RETRY_BASE_DELAY * (2 ** (attempt - 1)))
 
 
 # ──────────────────────────────────────────────

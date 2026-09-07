@@ -14,10 +14,12 @@ import openai
 from qa_agent import ai_review, config
 from qa_agent.ai_review import (
     AIFinding,
+    _call_with_retry,
     _demote_if_outside_diff,
     _get_review_prompt,
     _parse_review_json,
     _per_file_char_budget,
+    _retry_after_seconds,
     _validate_severity,
 )
 from qa_agent.repo_config import RepoConfig
@@ -1061,6 +1063,169 @@ class TestDiffSectionInReviewPrompt(unittest.TestCase):
         # Exact pre-fix wording, reproduced when there's no diff to reason from.
         self.assertIn("## Changed Files\n", content)
         self.assertIn("Please perform a thorough code review of the changed files above.", content)
+
+
+def _fake_api_error(cls, body=None):
+    """Build an instance of an openai APIError subclass without needing a
+    real httpx response -- these classes' real __init__ requires one, but
+    the retry logic under test only ever reads `.body` off the exception,
+    so a bare instance with that attribute set is sufficient and avoids
+    coupling the test to httpx's own API."""
+    err = cls.__new__(cls)
+    err.body = body
+    return err
+
+
+class TestRetryAfterSecondsHintExtraction(unittest.TestCase):
+    """_retry_after_seconds reads a server-provided retry hint (e.g. a
+    QA_FALLBACK_MODEL gateway's own 503 "inference_saturated" response)
+    off an API error's .body -- confirmed live 2026-09-07 against a real
+    Z13-backed gateway. Anything else must fall back to None so the caller
+    uses its own default backoff instead of trusting garbage input."""
+
+    def test_extracts_valid_numeric_hint(self):
+        err = _fake_api_error(openai.InternalServerError, {"retry_after_seconds": 5})
+        self.assertEqual(_retry_after_seconds(err), 5.0)
+
+    def test_extracts_float_hint(self):
+        err = _fake_api_error(openai.InternalServerError, {"retry_after_seconds": 2.5})
+        self.assertEqual(_retry_after_seconds(err), 2.5)
+
+    def test_missing_hint_returns_none(self):
+        err = _fake_api_error(openai.InternalServerError, {"type": "inference_saturated"})
+        self.assertIsNone(_retry_after_seconds(err))
+
+    def test_no_body_returns_none(self):
+        err = _fake_api_error(openai.InternalServerError, None)
+        self.assertIsNone(_retry_after_seconds(err))
+
+    def test_non_dict_body_returns_none(self):
+        err = _fake_api_error(openai.InternalServerError, "not json")
+        self.assertIsNone(_retry_after_seconds(err))
+
+    def test_non_numeric_hint_returns_none(self):
+        err = _fake_api_error(openai.InternalServerError, {"retry_after_seconds": "soon"})
+        self.assertIsNone(_retry_after_seconds(err))
+
+    def test_zero_or_negative_hint_returns_none(self):
+        # A malformed/hostile "wait 0 (or negative) seconds" hint must not
+        # be trusted as a real value -- treat it the same as no hint at
+        # all rather than busy-looping with zero delay between attempts.
+        self.assertIsNone(_retry_after_seconds(
+            _fake_api_error(openai.InternalServerError, {"retry_after_seconds": 0})
+        ))
+        self.assertIsNone(_retry_after_seconds(
+            _fake_api_error(openai.InternalServerError, {"retry_after_seconds": -5})
+        ))
+
+
+class TestCallWithRetry(unittest.TestCase):
+    """_call_with_retry regression coverage for the 2026-09-07 fix: a real
+    live-fire test against Z13 as a QA_FALLBACK_MODEL provider found a 503
+    "inference_saturated" response (which the original implementation
+    never retried at all, only HTTP 429) that would have succeeded within
+    ~3 minutes was instead reported as a hard failure with "no more
+    providers configured" -- failing the whole AI review on a single
+    transient collision that the server's own `retry_after_seconds` hint
+    said was worth waiting out."""
+
+    def setUp(self):
+        # Keep both budgets small and deterministic for fast, precise
+        # attempt-count assertions regardless of the real defaults.
+        self._patches = [
+            mock.patch.object(config, "AI_RETRY_MAX_ATTEMPTS", 3),
+            mock.patch.object(config, "AI_RETRY_BASE_DELAY", 1.0),
+            mock.patch.object(config, "AI_FALLBACK_RETRY_MAX_ATTEMPTS", 5),
+        ]
+        for p in self._patches:
+            p.start()
+            self.addCleanup(p.stop)
+
+    def test_succeeds_immediately_with_no_retry_needed(self):
+        fn = mock.Mock(return_value="ok")
+        with mock.patch("time.sleep") as sleep_mock:
+            result = _call_with_retry(fn)
+        self.assertEqual(result, "ok")
+        sleep_mock.assert_not_called()
+
+    def test_ratelimiterror_retries_then_succeeds_within_original_budget(self):
+        fn = mock.Mock(side_effect=[
+            _fake_api_error(openai.RateLimitError),
+            _fake_api_error(openai.RateLimitError),
+            "ok",
+        ])
+        with mock.patch("time.sleep") as sleep_mock:
+            result = _call_with_retry(fn)
+        self.assertEqual(result, "ok")
+        self.assertEqual(fn.call_count, 3)
+        self.assertEqual(sleep_mock.call_count, 2)
+
+    def test_ratelimiterror_exhausts_original_short_budget_and_raises(self):
+        # Unchanged pre-existing behavior: a persistent 429 still fails
+        # fast within AI_RETRY_MAX_ATTEMPTS (3 here), NOT the more
+        # generous AI_FALLBACK_RETRY_MAX_ATTEMPTS (5) -- a real
+        # quota-exhaustion 429 has no server-provided retry hint and
+        # retrying it harder just wastes more of an already-exhausted
+        # rolling quota window.
+        err = _fake_api_error(openai.RateLimitError)
+        fn = mock.Mock(side_effect=[err, err, err, "ok"])
+        with mock.patch("time.sleep"):
+            with self.assertRaises(openai.RateLimitError):
+                _call_with_retry(fn)
+        self.assertEqual(fn.call_count, 3)
+
+    def test_unhinted_internalservererror_fails_fast_within_original_budget(self):
+        # A 5xx with NO retry_after_seconds hint (a real, unexplained
+        # provider outage) must still fail over quickly -- using the
+        # larger AI_FALLBACK_RETRY_MAX_ATTEMPTS budget here would stall
+        # the whole provider chain on a provider that's simply down.
+        err = _fake_api_error(openai.InternalServerError, body=None)
+        fn = mock.Mock(side_effect=[err, err, err, "ok"])
+        with mock.patch("time.sleep") as sleep_mock:
+            with self.assertRaises(openai.InternalServerError):
+                _call_with_retry(fn)
+        self.assertEqual(fn.call_count, 3)
+        # Falls back to plain exponential backoff (AI_RETRY_BASE_DELAY),
+        # not a hinted delay, since there was no hint.
+        sleep_mock.assert_any_call(1.0)
+
+    def test_hinted_internalservererror_uses_exact_hinted_delay(self):
+        err = _fake_api_error(
+            openai.InternalServerError, {"retry_after_seconds": 5}
+        )
+        fn = mock.Mock(side_effect=[err, "ok"])
+        with mock.patch("time.sleep") as sleep_mock:
+            result = _call_with_retry(fn)
+        self.assertEqual(result, "ok")
+        sleep_mock.assert_called_once_with(5.0)
+
+    def test_hinted_internalservererror_gets_the_larger_fallback_budget(self):
+        # The core regression this fix addresses: a hinted 503 must
+        # survive past the original 3-attempt budget, up to the separate,
+        # more generous AI_FALLBACK_RETRY_MAX_ATTEMPTS (5 here) -- this is
+        # exactly the real Z13 scenario (2026-09-07) where the transient
+        # collision cleared on roughly the 4th-5th attempt, well past
+        # AI_RETRY_MAX_ATTEMPTS's original ceiling of 3.
+        err = _fake_api_error(
+            openai.InternalServerError, {"retry_after_seconds": 5}
+        )
+        fn = mock.Mock(side_effect=[err, err, err, err, "ok"])
+        with mock.patch("time.sleep") as sleep_mock:
+            result = _call_with_retry(fn)
+        self.assertEqual(result, "ok")
+        self.assertEqual(fn.call_count, 5)
+        self.assertEqual(sleep_mock.call_count, 4)
+        sleep_mock.assert_called_with(5.0)
+
+    def test_hinted_internalservererror_exhausts_fallback_budget_and_raises(self):
+        err = _fake_api_error(
+            openai.InternalServerError, {"retry_after_seconds": 5}
+        )
+        fn = mock.Mock(side_effect=[err] * 10)
+        with mock.patch("time.sleep"):
+            with self.assertRaises(openai.InternalServerError):
+                _call_with_retry(fn)
+        self.assertEqual(fn.call_count, 5)  # AI_FALLBACK_RETRY_MAX_ATTEMPTS
 
 
 if __name__ == "__main__":

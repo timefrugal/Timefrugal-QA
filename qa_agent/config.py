@@ -71,9 +71,22 @@ AI_MAX_TOTAL_CONTENT_CHARS = int(os.getenv("QA_AI_MAX_TOTAL_CONTENT_CHARS", "160
 # still bounded for a very large diff.
 AI_MAX_DIFF_CHARS = int(os.getenv("QA_AI_MAX_DIFF_CHARS", "8000"))
 
-# Retry settings for rate-limit errors (HTTP 429)
+# Retry settings for rate-limit errors (HTTP 429) and unhinted 5xx errors
+# (a provider outage with no server-provided retry guidance -- fails fast
+# so a genuinely down provider doesn't stall the whole fallback chain).
 AI_RETRY_MAX_ATTEMPTS = int(os.getenv("QA_AI_RETRY_MAX_ATTEMPTS", "3"))
 AI_RETRY_BASE_DELAY = float(os.getenv("QA_AI_RETRY_BASE_DELAY", "5.0"))  # seconds; doubles each attempt
+
+# Separate, more generous retry budget for a 5xx that carries a server-
+# specified `retry_after_seconds` hint (e.g. an OpenAI-compatible gateway's
+# own single-request-concurrency "inference_saturated" response, seen live
+# from a QA_FALLBACK_MODEL backed by Ollama). Unlike a blind exponential
+# backoff against an unknown outage, an explicit hint from the server is a
+# strong, trustworthy signal that waiting is worthwhile -- a real live-fire
+# test (2026-09-07) found a queued request cleared and completed with a
+# real 200 within ~3-3.5 minutes of a first collision, which the original
+# unified 3-attempt/429-only retry budget had no chance of ever covering.
+AI_FALLBACK_RETRY_MAX_ATTEMPTS = int(os.getenv("QA_AI_FALLBACK_RETRY_MAX_ATTEMPTS", "24"))
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 CEREBRAS_API_KEY = os.getenv("CEREBRAS_API_KEY", "")

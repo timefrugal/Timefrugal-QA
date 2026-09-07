@@ -178,8 +178,9 @@ All config is via environment variables:
 | `QA_FALLBACK_API_KEY` | _(none)_ | Auth for the 4th, last-resort fallback provider |
 | `QA_FALLBACK_MODEL` | _(none)_ | Model name for the 4th, last-resort fallback provider |
 | `QA_AI_MAX_TOKENS` | `3000` | Max tokens per AI response |
-| `QA_AI_RETRY_MAX_ATTEMPTS` | `3` | Retries on rate-limit (HTTP 429), per provider, before falling back to the next one |
-| `QA_AI_RETRY_BASE_DELAY` | `5.0` | Base delay in seconds between retries (doubles each attempt) |
+| `QA_AI_RETRY_MAX_ATTEMPTS` | `3` | Retries on rate-limit (HTTP 429) or an *unhinted* 5xx, per provider, before falling back to the next one |
+| `QA_AI_RETRY_BASE_DELAY` | `5.0` | Base delay in seconds for the above retries (doubles each attempt) |
+| `QA_AI_FALLBACK_RETRY_MAX_ATTEMPTS` | `24` | Retries on a 5xx that carries a server `retry_after_seconds` hint (e.g. a self-hosted `QA_FALLBACK_MODEL` gateway's own concurrency-limit response) — sleeps the server's exact hinted delay each attempt |
 | `QA_MAX_COMPLEXITY` | `10` | Cyclomatic complexity threshold |
 | `QA_REPORT_FILE` | `qa_report.md` | Local report output path |
 
