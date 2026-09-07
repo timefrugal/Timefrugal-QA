@@ -205,5 +205,90 @@ class TestBuildCommentBlockedHeader(unittest.TestCase):
         )
 
 
+class TestBuildCommentStaysUnderGitHubCommentLimit(unittest.TestCase):
+    """Regression coverage for a real HTTP 422 seen live 2026-09-07:
+    "Body is too long (maximum is 65536 characters)" on a PR whose static
+    analysis produced 598 medium + 356 low + 1143 info findings on one
+    file. post_pr_comment silently returned False and NOTHING was ever
+    posted -- a real QA result (pass or fail) vanishing without a trace.
+    Two independent guards now exist: capping the inline medium/low/info
+    findings list (the actual usual cause), and a last-resort whole-body
+    truncation (_truncate_to_github_limit) covering whatever the cap
+    doesn't (a huge AI review or generated-test block)."""
+
+    def test_body_never_exceeds_githubs_hard_limit_even_with_massive_findings(self):
+        static = AnalysisResults(
+            findings=[_static_finding("MEDIUM") for _ in range(5000)]
+        )
+        ai = AIReview()
+        body = pr_reporter._build_comment(static, ai, "")
+        self.assertLessEqual(len(body), pr_reporter._GITHUB_COMMENT_MAX_CHARS)
+
+    def test_small_findings_list_is_not_truncated_or_capped(self):
+        static = AnalysisResults(findings=[_static_finding("MEDIUM")])
+        ai = AIReview()
+        body = pr_reporter._build_comment(static, ai, "")
+        self.assertNotIn("Report truncated", body)
+        self.assertNotIn("more not shown here", body)
+
+    def test_lower_findings_list_over_the_cap_shows_omitted_count_note(self):
+        count = pr_reporter._MAX_LOWER_FINDINGS_SHOWN + 25
+        static = AnalysisResults(
+            findings=[_static_finding("LOW") for _ in range(count)]
+        )
+        ai = AIReview()
+        body = pr_reporter._build_comment(static, ai, "")
+        self.assertIn("...and 25 more not shown here", body)
+        # Exactly the cap's worth of individual finding lines were rendered,
+        # not the full 175 -- confirms the cap actually limits the list
+        # rather than merely appending a note on top of everything.
+        self.assertEqual(
+            body.count("**pylint** dangerous-default-value"),
+            pr_reporter._MAX_LOWER_FINDINGS_SHOWN,
+        )
+
+    def test_lower_findings_list_at_or_under_the_cap_has_no_omitted_note(self):
+        static = AnalysisResults(
+            findings=[_static_finding("LOW") for _ in range(pr_reporter._MAX_LOWER_FINDINGS_SHOWN)]
+        )
+        ai = AIReview()
+        body = pr_reporter._build_comment(static, ai, "")
+        self.assertNotIn("more not shown here", body)
+
+    def test_whole_body_safety_net_truncates_an_oversized_ai_review_alone(self):
+        # Even with a SINGLE static finding (well under the list cap), a
+        # sufficiently large AI review/summary must still not blow past
+        # GitHub's limit -- the last-resort truncation must not depend on
+        # the findings-list cap being the only possible cause.
+        static = AnalysisResults(findings=[_static_finding("LOW")])
+        ai = AIReview(summary="x" * 200_000)
+        body = pr_reporter._build_comment(static, ai, "")
+        self.assertLessEqual(len(body), pr_reporter._GITHUB_COMMENT_MAX_CHARS)
+        self.assertIn("Report truncated", body)
+
+
+class TestBuildCommentCreditsTheProviderThatActuallyAnswered(unittest.TestCase):
+    """Added 2026-09-07 alongside the QA_FALLBACK_MODEL retry fix -- once a
+    repo configures more than one provider (or a QA_FALLBACK_MODEL), which
+    one actually served a given review is no longer a foregone conclusion.
+    The comment must say which one it was, not silently attribute every
+    review to Groq the way the original hardcoded footer did."""
+
+    def test_provider_line_shown_when_ai_review_succeeded(self):
+        static = AnalysisResults()
+        ai = AIReview(summary="looks fine", provider="fallback", provider_model="qwen3.8:27b")
+        body = pr_reporter._build_comment(static, ai, "")
+        self.assertIn("_AI review served by **fallback** (`qwen3.8:27b`)_", body)
+        self.assertIn("AI review via fallback", body)  # footer
+        self.assertNotIn("Free AI via Groq", body)
+
+    def test_provider_line_absent_when_no_provider_succeeded(self):
+        static = AnalysisResults()
+        ai = AIReview(errors=["No configured AI provider returned valid JSON (last error: ...)"])
+        body = pr_reporter._build_comment(static, ai, "")
+        self.assertNotIn("AI review served by", body)
+        self.assertIn("· Free AI · Open-source analysis tools_", body)  # generic footer fallback
+
+
 if __name__ == "__main__":
     unittest.main()

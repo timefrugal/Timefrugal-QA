@@ -71,31 +71,57 @@ AI_MAX_TOTAL_CONTENT_CHARS = int(os.getenv("QA_AI_MAX_TOTAL_CONTENT_CHARS", "160
 # still bounded for a very large diff.
 AI_MAX_DIFF_CHARS = int(os.getenv("QA_AI_MAX_DIFF_CHARS", "8000"))
 
-# Retry settings for rate-limit errors (HTTP 429)
+# Retry settings for rate-limit errors (HTTP 429) and unhinted 5xx errors
+# (a provider outage with no server-provided retry guidance -- fails fast
+# so a genuinely down provider doesn't stall the whole fallback chain).
 AI_RETRY_MAX_ATTEMPTS = int(os.getenv("QA_AI_RETRY_MAX_ATTEMPTS", "3"))
 AI_RETRY_BASE_DELAY = float(os.getenv("QA_AI_RETRY_BASE_DELAY", "5.0"))  # seconds; doubles each attempt
+
+# Separate, more generous retry budget for a 5xx that carries a server-
+# specified `retry_after_seconds` hint (e.g. an OpenAI-compatible gateway's
+# own single-request-concurrency "inference_saturated" response, seen live
+# from a QA_FALLBACK_MODEL backed by Ollama). Unlike a blind exponential
+# backoff against an unknown outage, an explicit hint from the server is a
+# strong, trustworthy signal that waiting is worthwhile -- a real live-fire
+# test (2026-09-07) found a queued request cleared and completed with a
+# real 200 within ~3-3.5 minutes of a first collision, which the original
+# unified 3-attempt/429-only retry budget had no chance of ever covering.
+AI_FALLBACK_RETRY_MAX_ATTEMPTS = max(1, int(os.getenv("QA_AI_FALLBACK_RETRY_MAX_ATTEMPTS", "24")))
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 CEREBRAS_API_KEY = os.getenv("CEREBRAS_API_KEY", "")
 MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY", "")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
 # mistral-small-latest is Mistral's free "Experiment" tier model (opt-in to
 # data training required to unlock the tier's full ~1B token/month quota --
 # DJ's own account/tradeoff decision, not this tool's to make).
 AI_MODEL_MISTRAL = os.getenv("QA_AI_MODEL_MISTRAL", "mistral-small-latest")
 
-# Fourth, last-resort fallback slot: a generic OpenAI-SDK-compatible
-# endpoint, not tied to a specific named cloud service like the three
+# Added 2026-09-07 after Groq AND Mistral were simultaneously rate-limited
+# for hours on a real PR (timefrugal/Timefrugal-QA#32) -- a fourth,
+# independent free-tier hop reduces the chance of every named provider
+# being exhausted at once. Google's Gemini API has a genuinely ongoing,
+# ratelimited-not-trial free tier (confirmed against ai.google.dev's own
+# pricing page: "Free of charge" input/output, no expiration, listed
+# alongside Paid/Enterprise as a permanent option) on a completely
+# separate quota pool from Groq/Cerebras/Mistral. gemini-3.8-flash is the
+# current free-tier model Google's own OpenAI-compatibility docs use in
+# their examples.
+AI_MODEL_GEMINI = os.getenv("QA_AI_MODEL_GEMINI", "gemini-3.8-flash")
+
+# Fifth, last-resort fallback slot: a generic OpenAI-SDK-compatible
+# endpoint, not tied to a specific named cloud service like the four
 # above. Named QA_FALLBACK_* rather than following a per-service pattern
 # (e.g. QA_AI_MODEL_<PROVIDER>) because this slot isn't for a fixed
 # service -- the first consumer is jarvis-infra routing to Z13 (a
 # Tailscale-reachable home GPU box running an Ollama-compatible gateway)
-# as a last resort when Groq/Cerebras/Mistral are all exhausted or down
-# (see jarvis-infra issue #200), but the slot itself is generic. No
+# as a last resort when Groq/Cerebras/Mistral/Gemini are all exhausted or
+# down (see jarvis-infra issue #200), but the slot itself is generic. No
 # built-in default for any of the three -- unlike Cerebras/Mistral's
 # base_url defaults, there's no sensible default endpoint for an
 # arbitrary self-hosted fallback, so all three must be explicitly set
-# together or this entry stays absent. Unlike Groq/Cerebras/Mistral
+# together or this entry stays absent. Unlike Groq/Cerebras/Mistral/Gemini
 # (gated purely on api_key, since their base_url/model always come from a
 # real default), ai_review._configured_providers ENFORCES this for the
 # generic slot specifically: it requires api_key AND base_url AND model
@@ -142,10 +168,11 @@ QA_FALLBACK_REASONING_EFFORT = os.getenv("QA_FALLBACK_REASONING_EFFORT", "").str
 
 # Provider chain, tried in this order by ai_review._call_with_fallback. A
 # provider whose API key env var isn't set is skipped, not an error --
-# consumer repos can add CEREBRAS_API_KEY/MISTRAL_API_KEY/QA_FALLBACK_API_KEY
-# whenever they want the fallback, and things keep working Groq-only until
-# then. QA_FALLBACK_* (last) is deliberately last-resort: it's only reached
-# once Groq, Cerebras, AND Mistral have all failed/are all unconfigured.
+# consumer repos can add CEREBRAS_API_KEY/MISTRAL_API_KEY/GEMINI_API_KEY/
+# QA_FALLBACK_API_KEY whenever they want the fallback, and things keep
+# working Groq-only until then. QA_FALLBACK_* (last) is deliberately
+# last-resort: it's only reached once Groq, Cerebras, Mistral, AND Gemini
+# have all failed/are all unconfigured.
 AI_PROVIDERS = [
     {
         "name": "groq",
@@ -164,6 +191,14 @@ AI_PROVIDERS = [
         "base_url": os.getenv("MISTRAL_BASE_URL", "https://api.mistral.ai/v1"),
         "api_key": MISTRAL_API_KEY,
         "model": AI_MODEL_MISTRAL,
+    },
+    {
+        "name": "gemini",
+        "base_url": os.getenv(
+            "GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai/"
+        ),
+        "api_key": GEMINI_API_KEY,
+        "model": AI_MODEL_GEMINI,
     },
     {
         "name": "fallback",

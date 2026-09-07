@@ -1,7 +1,7 @@
 # Timefrugal-QA — Claude Code Handoff
 
 ## Project purpose
-AI-powered QA agent for Python, Java, and HTML repos. Runs as a GitHub Actions reusable workflow AND locally before raising a PR. Zero cost — uses a chain of free-tier AI providers (Groq → Cerebras → Mistral, automatic fallback, plus an optional 4th `QA_FALLBACK_*`-configured last-resort provider — see "AI provider chain" below) and open-source static analysis tools only. (Was GitHub Models until GitHub fully retired it 2026-07-30; see CHANGELOG.md [Unreleased].)
+AI-powered QA agent for Python, Java, and HTML repos. Runs as a GitHub Actions reusable workflow AND locally before raising a PR. Zero cost — uses a chain of free-tier AI providers (Groq → Cerebras → Mistral → Gemini, automatic fallback, plus an optional 5th `QA_FALLBACK_*`-configured last-resort provider — see "AI provider chain" below) and open-source static analysis tools only. (Was GitHub Models until GitHub fully retired it 2026-07-30; see CHANGELOG.md [Unreleased].)
 
 **Owner:** github.com/Timefrugal  
 **Target languages:** Python, Java, HTML, JavaScript, TypeScript (auto-detected from changed file extensions)  
@@ -16,13 +16,13 @@ Timefrugal-QA/
 ├── qa_agent/
 │   ├── __init__.py          # version = 1.2.0
 │   ├── __main__.py          # CLI: python -m qa_agent [--ci|--base|--no-tests|--commit-tests|--model]
-│   ├── config.py            # all config via env vars; AI_PROVIDERS chain (GROQ_API_KEY, CEREBRAS_API_KEY, MISTRAL_API_KEY, QA_AI_MODEL*, etc.)
+│   ├── config.py            # all config via env vars; AI_PROVIDERS chain (GROQ_API_KEY, CEREBRAS_API_KEY, MISTRAL_API_KEY, GEMINI_API_KEY, QA_AI_MODEL*, etc.)
 │   ├── agent.py             # orchestrator: git diff → static analysis → AI review → report
 │   ├── static_analysis.py  # language detection + per-language tool runners (parallel); Python: bandit/pylint/mypy/radon/pip-audit; Java: PMD; HTML: htmlhint; JS/TS: ESLint (+tsc for TS); all: semgrep
 │   ├── semgrep_rules/
 │   │   ├── python-security.yml  # subprocess shell=True, eval/exec, pickle, hardcoded secrets, requests timeout
 │   │   └── python-quality.yml   # bare except, mutable default args
-│   ├── ai_review.py         # provider-chain fallback (Groq→Cerebras→Mistral, all OpenAI-compatible); language-aware review + test prompts (Python→pytest, Java→JUnit 5, JS/TS→Jest, HTML skips tests)
+│   ├── ai_review.py         # provider-chain fallback (Groq→Cerebras→Mistral→Gemini, all OpenAI-compatible); language-aware review + test prompts (Python→pytest, Java→JUnit 5, JS/TS→Jest, HTML skips tests)
 │   ├── pr_reporter.py       # posts PR comment + sets commit status check via GitHub API
 │   └── local_reporter.py   # rich terminal output + saves qa_report.md
 ├── .github/workflows/
@@ -30,7 +30,7 @@ Timefrugal-QA/
 ├── templates/
 │   └── repo_workflow.yml    # copy this to .github/workflows/qa.yml in each target repo
 ├── scripts/
-│   ├── run_local_qa.sh      # local pre-PR runner (needs at least one of GROQ_API_KEY/CEREBRAS_API_KEY/MISTRAL_API_KEY)
+│   ├── run_local_qa.sh      # local pre-PR runner (needs at least one of GROQ_API_KEY/CEREBRAS_API_KEY/MISTRAL_API_KEY/GEMINI_API_KEY)
 │   ├── setup_all_repos.sh  # bulk-adds workflow to all repos via gh CLI + GitHub API
 │   └── setup_new_repo.sh   # adds workflow to a single named repo (usage: bash setup_new_repo.sh owner/repo)
 ├── .pre-commit-hooks.yaml   # pre-commit framework integration
@@ -43,7 +43,9 @@ Timefrugal-QA/
 
 ## Architecture decisions (don't change without reason)
 
-- **Free AI, provider chain with automatic fallback:** `config.AI_PROVIDERS` tries Groq (`api.groq.com/openai/v1`, `GROQ_API_KEY`) → Cerebras (`api.cerebras.ai/v1`, `CEREBRAS_API_KEY`) → Mistral (`api.mistral.ai/v1`, `MISTRAL_API_KEY`) → an optional 4th last-resort provider (`QA_FALLBACK_BASE_URL`/`QA_FALLBACK_API_KEY`/`QA_FALLBACK_MODEL`) in order, all OpenAI-compatible. `ai_review._call_with_fallback` moves to the next provider on any failure from the current one (after that provider's own `_call_with_retry` 429 retries are exhausted); a provider with no API key set is skipped, not an error. Added 2026-07-30 after a single PR's diff hit Groq's 12K TPM ceiling outright — a single free-tier backend wasn't enough headroom on its own. (Switched from GitHub Models 2026-07-30 when GitHub fully retired it — see CHANGELOG.md.) The `QA_FALLBACK_*` 4th slot was added after a real incident (jarvis-infra issue #200): Groq's org-wide daily quota exhausted, cascading into a Cerebras JSON-parse crash that took down the whole gate. Unlike the three named cloud providers, it has no default base URL/model — it's a generic OpenAI-SDK-compatible slot, silently absent unless all three env vars are set. **JSON parsing now happens INSIDE each provider's own attempt** (`review_code`'s `_make_request`/`ai_review._parse_review_json`), not after `_call_with_fallback` returns — a provider that responds HTTP 200 with unparseable content is treated as that provider's failure so the chain still advances (this is what actually happened with Cerebras during the issue #200 incident, and is a behavior change affecting every repo on this chain, not just ones that configure the 4th slot).
+- **Free AI, provider chain with automatic fallback:** `config.AI_PROVIDERS` tries Groq (`api.groq.com/openai/v1`, `GROQ_API_KEY`) → Cerebras (`api.cerebras.ai/v1`, `CEREBRAS_API_KEY`) → Mistral (`api.mistral.ai/v1`, `MISTRAL_API_KEY`) → Gemini (`generativelanguage.googleapis.com/v1beta/openai/`, `GEMINI_API_KEY`) → an optional 5th last-resort provider (`QA_FALLBACK_BASE_URL`/`QA_FALLBACK_API_KEY`/`QA_FALLBACK_MODEL`) in order, all OpenAI-compatible. `ai_review._call_with_fallback` moves to the next provider on any failure from the current one (after that provider's own `_call_with_retry` retries are exhausted); a provider with no API key set is skipped, not an error. Added 2026-07-30 after a single PR's diff hit Groq's 12K TPM ceiling outright — a single free-tier backend wasn't enough headroom on its own. (Switched from GitHub Models 2026-07-30 when GitHub fully retired it — see CHANGELOG.md.) Gemini was added 2026-09-07 after Groq AND Mistral were simultaneously rate-limited for hours on a real PR — a fourth named provider on a genuinely separate, ongoing free-tier quota pool (confirmed against Google's own pricing docs, not a trial), reducing the chance every named provider is exhausted at once. The `QA_FALLBACK_*` 5th slot was added after a real incident (jarvis-infra issue #200): Groq's org-wide daily quota exhausted, cascading into a Cerebras JSON-parse crash that took down the whole gate. Unlike the four named cloud providers, it has no default base URL/model — it's a generic OpenAI-SDK-compatible slot, silently absent unless all three env vars are set. **JSON parsing now happens INSIDE each provider's own attempt** (`review_code`'s `_make_request`/`ai_review._parse_review_json`), not after `_call_with_fallback` returns — a provider that responds HTTP 200 with unparseable content is treated as that provider's failure so the chain still advances (this is what actually happened with Cerebras during the issue #200 incident, and is a behavior change affecting every repo on this chain, not just ones that configure the 5th slot).
+- **The PR comment reports which provider actually answered** — `AIReview.provider`/`.provider_model`, set by `review_code` from `_call_with_fallback`'s return (now `(result, provider_name, model)`, not just `result`). Shown as its own line under the header and folded into the footer, replacing what used to be a hardcoded `"Free AI via Groq"` regardless of which provider (if any) actually served the review. Added 2026-09-07 alongside the retry fix below — once a repo configures more than Groq alone, which provider answered a given call stopped being a foregone conclusion, and there was previously no way to tell from the report itself.
+- **`_call_with_retry` retries 429 AND 5xx, with two separate budgets** — an unhinted failure (real outage, no server guidance) still fails fast within `AI_RETRY_MAX_ATTEMPTS`/`AI_RETRY_BASE_DELAY` (3 attempts, exponential backoff) so a genuinely down provider doesn't stall the whole chain; a 5xx that carries a `retry_after_seconds` hint in its error body (e.g. an Ollama-backed `QA_FALLBACK_MODEL` gateway's own single-concurrency "inference_saturated" response) is trusted as a real transient signal and gets the separate, more generous `AI_FALLBACK_RETRY_MAX_ATTEMPTS` (default 24), sleeping the server's exact hinted delay each time via `_retry_after_seconds`. Added 2026-09-07 after a live-fire test against `timefrugal/Mika`'s Z13 fallback found a 503 that would have succeeded within ~3 minutes (confirmed via the gateway's own log — the same request, queued under a different correlation ID, completed with a real 200) instead reported as a hard, unretried failure. Only HTTP 429 was ever retried before this fix — 5xx (`openai.InternalServerError`) propagated straight through `_call_with_retry` untouched.
 - **Per-repo installable pattern:** Python logic lives in ONE repo (`qa_agent`), installed via `pip install git+...@v1` — auto-updates for consumers whenever they re-run their workflow (since the pin resolves at install time). The workflow YAML itself (`templates/repo_workflow.yml`) is copied into each target repo at install time and is NOT automatically refreshed later — `auto-setup.yml`'s skip-if-exists check means workflow-level changes require manually re-running `setup_all_repos.sh`/`setup_new_repo.sh` against already-installed repos.
 - **Blocking threshold:** CRITICAL + HIGH severity → blocks merge. MEDIUM/LOW → advisory. Controlled by `BLOCK_MERGE_THRESHOLD` in `config.py`.
 - **PR comment deduplication:** `pr_reporter.py` looks for an existing comment with the marker `<!-- timefrugal-qa-comment -->` and updates it rather than appending a new one on each push.
@@ -103,18 +105,20 @@ Method: full read of `qa_agent/*.py`, both workflows, `scripts/`, `templates/`, 
 | Variable | Where set | Purpose |
 |----------|-----------|---------|
 | `GITHUB_TOKEN` | Auto in Actions; manual locally | Auth for GitHub API (PR comments, commit status) |
-| `GROQ_API_KEY` | At least one of these three required (CI: repo secret; local: manual) | Auth for Groq (1st in provider chain) |
+| `GROQ_API_KEY` | At least one of these four required (CI: repo secret; local: manual) | Auth for Groq (1st in provider chain) |
 | `CEREBRAS_API_KEY` | Optional | Auth for Cerebras (2nd, fallback) |
 | `MISTRAL_API_KEY` | Optional | Auth for Mistral (3rd, fallback) |
-| `QA_FALLBACK_BASE_URL` | Optional | Base URL for the 4th, last-resort fallback provider (e.g. jarvis-infra's Z13 gateway) -- must be set together with `QA_FALLBACK_API_KEY` and `QA_FALLBACK_MODEL` for this slot to activate |
-| `QA_FALLBACK_API_KEY` | Optional | Auth for the 4th, last-resort fallback provider -- only reached once Groq, Cerebras, AND Mistral have all failed/are unconfigured |
-| `QA_FALLBACK_MODEL` | Optional | Model name for the 4th, last-resort fallback provider -- no default (unlike the three named cloud providers, this slot isn't tied to a fixed service) |
+| `GEMINI_API_KEY` | Optional | Auth for Gemini (4th, fallback) |
+| `QA_FALLBACK_BASE_URL` | Optional | Base URL for the 5th, last-resort fallback provider (e.g. jarvis-infra's Z13 gateway) -- must be set together with `QA_FALLBACK_API_KEY` and `QA_FALLBACK_MODEL` for this slot to activate |
+| `QA_FALLBACK_API_KEY` | Optional | Auth for the 5th, last-resort fallback provider -- only reached once Groq, Cerebras, Mistral, AND Gemini have all failed/are unconfigured |
+| `QA_FALLBACK_MODEL` | Optional | Model name for the 5th, last-resort fallback provider -- no default (unlike the four named cloud providers, this slot isn't tied to a fixed service) |
 | `QA_AI_MODEL` | Optional | Override Groq model (default: `openai/gpt-oss-120b`) |
 | `QA_AI_MODEL_CEREBRAS` | Optional | Override Cerebras model (default: `gpt-oss-120b`) |
 | `QA_AI_MODEL_MISTRAL` | Optional | Override Mistral model (default: `mistral-small-latest`) |
 | `QA_AI_MAX_TOKENS` | Optional | Max AI response tokens (default: 3000) |
-| `QA_AI_RETRY_MAX_ATTEMPTS` | Optional | Retries on rate-limit HTTP 429 (default: 3) |
-| `QA_AI_RETRY_BASE_DELAY` | Optional | Base retry delay in seconds, doubles each attempt (default: 5.0) |
+| `QA_AI_RETRY_MAX_ATTEMPTS` | Optional | Retries on HTTP 429 or an *unhinted* 5xx — i.e. no `retry_after_seconds` in the error body (default: 3) |
+| `QA_AI_RETRY_BASE_DELAY` | Optional | Base retry delay in seconds for the above, doubles each attempt (default: 5.0) |
+| `QA_AI_FALLBACK_RETRY_MAX_ATTEMPTS` | Optional | Retries on a 5xx that DOES carry a server `retry_after_seconds` hint (e.g. an Ollama-backed `QA_FALLBACK_MODEL` gateway's own single-concurrency "inference_saturated" response) — sleeps the server's exact hinted delay each attempt rather than guessing (default: 24) |
 | `QA_MAX_COMPLEXITY` | Optional | Cyclomatic complexity threshold (default: 10) |
 | `QA_REPORT_FILE` | Optional | Local report output path (default: `qa_report.md`) |
 | `GITHUB_REPOSITORY` | Auto in Actions | `owner/repo` string |

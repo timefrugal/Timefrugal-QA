@@ -28,6 +28,42 @@ SEVERITY_EMOJI = {
 
 CHECK_NAME = "Timefrugal-QA"
 
+# GitHub's own hard limit on an issue/PR comment body (IssueComment.body is
+# validated server-side at exactly this size) -- a comment over this fails
+# outright with HTTP 422, which previously meant a large-diff PR's real QA
+# result (pass or fail) silently never got posted at all. Confirmed live
+# 2026-09-07: 598 medium + 356 low + 1143 info findings on one file alone
+# built a body well over this limit.
+_GITHUB_COMMENT_MAX_CHARS = 65536
+
+# Inline cap on the non-critical/high findings list specifically -- this is
+# the actual usual source of an oversized body (hundreds of near-duplicate
+# bandit/semgrep findings, e.g. the same "partial executable path" warning
+# repeated per subprocess call site), not the AI review or generated tests,
+# which are the more valuable, PR-specific sections and come later in the
+# comment. Capping this list is what actually prevents oversized bodies in
+# the common case; the whole-body truncation below is a last-resort safety
+# net for whatever this cap doesn't cover.
+_MAX_LOWER_FINDINGS_SHOWN = 150
+
+
+def _truncate_to_github_limit(body: str) -> str:
+    """Last-resort safety net: if the assembled comment is still over
+    GitHub's hard size limit after the findings-list cap above (e.g. a
+    very large AI review or generated-test block), truncate rather than
+    let post_pr_comment fail outright with a 422 and post nothing at all.
+    A truncated-but-posted comment (with a real status still set via
+    set_commit_status, which never depends on comment length) is strictly
+    more useful than a real QA result vanishing silently."""
+    if len(body) <= _GITHUB_COMMENT_MAX_CHARS:
+        return body
+    notice = (
+        "\n\n---\n_⚠️ Report truncated -- the full result exceeded GitHub's "
+        "comment size limit. See the `qa-report` workflow artifact "
+        "(qa_report.md) for the complete output._\n"
+    )
+    return body[: _GITHUB_COMMENT_MAX_CHARS - len(notice)] + notice
+
 
 def _request_with_retry(method: Callable, url: str, **kwargs) -> requests.Response:
     """Make an HTTP request, retrying up to 3 times on HTTP 429 with exponential backoff."""
@@ -183,6 +219,15 @@ def _build_comment(
     if note:
         parts += [note, ""]
 
+    # Which provider actually served the AI review -- added 2026-09-07 so
+    # a report never leaves this unknowable after the fact. Only shown
+    # once a provider actually succeeded (ai.provider set by review_code
+    # from _call_with_fallback's return); silent when AI review wasn't
+    # configured or every provider failed (ai.errors already covers that
+    # case via the Tool Warnings section below).
+    if ai.provider:
+        parts += [f"_AI review served by **{ai.provider}** (`{ai.provider_model}`)_", ""]
+
     # AI summary
     if ai.summary:
         parts += ["### 📋 Summary", ai.summary, ""]
@@ -226,11 +271,19 @@ def _build_comment(
             parts.append("<details>")
             parts.append(f"<summary>📄 Medium / Low / Info findings ({len(lower)})</summary>")
             parts.append("")
-            for f in lower:
+            shown = lower[:_MAX_LOWER_FINDINGS_SHOWN]
+            for f in shown:
                 emoji = SEVERITY_EMOJI.get(f.severity, "⚪")
                 parts.append(
                     f"- {emoji} **[{f.severity}]** `{f.file}:{f.line}` — "
                     f"**{f.tool}** {f.message}"
+                )
+            omitted = len(lower) - len(shown)
+            if omitted > 0:
+                parts.append(
+                    f"- _...and {omitted} more not shown here (see the "
+                    "`qa-report` workflow artifact / qa_report.md for the "
+                    "complete list)._"
                 )
             parts.append("")
             parts.append("</details>")
@@ -286,12 +339,20 @@ def _build_comment(
             parts.append(f"- {e}")
         parts += ["", "</details>", ""]
 
+    # Was a hardcoded "Free AI via Groq" regardless of which provider (or
+    # whether any at all) actually served the review -- misleading once a
+    # repo configures Cerebras/Mistral/QA_FALLBACK_MODEL fallback, since
+    # any of those could be the one that actually answered. Now reflects
+    # ai.provider when a review succeeded; falls back to the original
+    # generic wording when it didn't (no AI review configured, or every
+    # provider failed -- ai.errors already covers why).
+    ai_credit = f"AI review via {ai.provider}" if ai.provider else "Free AI"
     parts.append(
         "_Powered by [Timefrugal-QA](https://github.com/Timefrugal/Timefrugal-QA) "
-        "· Free AI via Groq · Open-source analysis tools_"
+        f"· {ai_credit} · Open-source analysis tools_"
     )
 
-    return "\n".join(parts)
+    return _truncate_to_github_limit("\n".join(parts))
 
 
 # ──────────────────────────────────────────────

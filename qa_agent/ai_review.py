@@ -1,8 +1,9 @@
 """
 AI-powered code review using a chain of free-tier providers (Groq, then
-Cerebras, then Mistral, then an optional env-gated last-resort fallback --
-see config.AI_PROVIDERS for the authoritative order) — no extra billing on
-any of them. Providers are tried in order; a provider that's out of quota,
+Cerebras, then Mistral, then Gemini, then an optional env-gated
+last-resort fallback -- see config.AI_PROVIDERS for the authoritative
+order) — no extra billing on any of them. Providers are tried in order;
+a provider that's out of quota,
 down, returns unparseable content, or simply not configured (missing API
 key) is skipped in favor of the next one, so a single provider running out
 (or misbehaving) doesn't take the whole AI review down. (GitHub Models,
@@ -56,6 +57,16 @@ class AIReview:
     # true` (H1: AI findings shouldn't independently block with unvalidated
     # severity). Set by review_code() from the repo_config it was given.
     ai_blocking: bool = False
+    # Which configured provider (config.AI_PROVIDERS entry name -- "groq",
+    # "cerebras", "mistral", or "fallback") and model actually answered,
+    # set by review_code() from _call_with_fallback's return. Empty when no
+    # provider succeeded (review.errors will explain why) -- added
+    # 2026-09-07 so a QA report can say which provider was used instead of
+    # leaving that unknowable after the fact, particularly relevant once a
+    # QA_FALLBACK_MODEL is configured, since which provider answers a given
+    # call is no longer a foregone conclusion.
+    provider: str = ""
+    provider_model: str = ""
 
     @property
     def has_blocking_issues(self) -> bool:
@@ -306,18 +317,71 @@ def _per_file_char_budget(file_count: int, per_file_cap: int, floor: int = 500) 
 
 _T = TypeVar("_T")
 
+# Upper bound on a server-provided retry_after_seconds hint (see
+# _retry_after_seconds below) -- an untrusted or misconfigured
+# QA_FALLBACK_BASE_URL could otherwise return an arbitrarily large value
+# and stall CI for that long. 300s (5 min) comfortably covers the real
+# collision observed live (a queued request cleared within ~3.5 minutes)
+# while still bounding the worst case.
+_MAX_RETRY_AFTER_SECONDS = 300.0
+
+
+def _retry_after_seconds(err: BaseException) -> Optional[float]:
+    """Extract a server-specified retry delay from an API error's body, if
+    present. E.g. an OpenAI-compatible gateway with its own single-request
+    concurrency limit (such as an Ollama-backed QA_FALLBACK_MODEL) can
+    return 503 {"error": {"type": "inference_saturated", ...,
+    "retry_after_seconds": N}} when another request already occupies the
+    model -- openai's client unwraps the outer "error" key into the
+    exception's own .body, so this reads body directly. Returns None (the
+    caller falls back to its own exponential backoff) for any provider
+    that doesn't send this hint, or sends a non-positive/non-numeric one.
+    Clamped to _MAX_RETRY_AFTER_SECONDS so an untrusted/misconfigured
+    provider can't force an excessively long sleep."""
+    body = getattr(err, "body", None)
+    if isinstance(body, dict):
+        value = body.get("retry_after_seconds")
+        if isinstance(value, (int, float)) and value > 0:
+            return min(float(value), _MAX_RETRY_AFTER_SECONDS)
+    return None
+
 
 def _call_with_retry(fn: Callable[[], _T]) -> _T:
-    """Call fn(), retrying on HTTP 429 (rate limit) with exponential backoff."""
-    for attempt in range(config.AI_RETRY_MAX_ATTEMPTS):
+    """Call fn(), retrying on HTTP 429 (rate limit) or 5xx (server error)
+    with exponential backoff -- except when the error body carries a
+    `retry_after_seconds` hint (e.g. a QA_FALLBACK_MODEL gateway's own
+    single-concurrency "inference_saturated" response), in which case that
+    exact delay is used instead, under a separate, more generous attempt
+    budget (config.AI_FALLBACK_RETRY_MAX_ATTEMPTS).
+
+    The budgets are kept deliberately separate: an *unhinted* 5xx (or a
+    429) gets the original short, fast-failing budget
+    (config.AI_RETRY_MAX_ATTEMPTS) so a genuinely down provider still
+    fails over to the next one quickly, rather than stalling the whole
+    chain on blind backoff. A *hinted* 503 is a fundamentally stronger,
+    trustworthy signal -- the server is explicitly saying "retry me, this
+    is transient" -- so it earns a longer budget. Added after a real
+    live-fire test (2026-09-07) of Z13 as a QA_FALLBACK_MODEL provider: a
+    503 that would have succeeded within ~3 minutes (confirmed via the
+    gateway's own log -- a concurrently queued request for the very same
+    review completed with a real 200 shortly after) was instead reported
+    as a hard, unretried failure with "no more providers configured",
+    failing the whole AI review on a single transient collision."""
+    attempt = 0
+    while True:
         try:
             return fn()
-        except openai.RateLimitError:
-            if attempt == config.AI_RETRY_MAX_ATTEMPTS - 1:
+        except (openai.RateLimitError, openai.InternalServerError) as e:
+            hinted_delay = _retry_after_seconds(e)
+            max_attempts = (
+                config.AI_FALLBACK_RETRY_MAX_ATTEMPTS
+                if hinted_delay is not None
+                else config.AI_RETRY_MAX_ATTEMPTS
+            )
+            attempt += 1
+            if attempt >= max_attempts:
                 raise
-            delay = config.AI_RETRY_BASE_DELAY * (2 ** attempt)
-            time.sleep(delay)
-    raise RuntimeError("unreachable")  # satisfies type checker
+            time.sleep(hinted_delay if hinted_delay is not None else config.AI_RETRY_BASE_DELAY * (2 ** (attempt - 1)))
 
 
 # ──────────────────────────────────────────────
@@ -332,8 +396,8 @@ def _configured_providers() -> List[dict]:
     providers lack keys.
 
     Requiring all three (not just api_key) matters for the generic
-    QA_FALLBACK_* 4th slot specifically: unlike Groq/Cerebras/Mistral,
-    which always carry a real (hardcoded or defaulted) base_url and model
+    QA_FALLBACK_* 5th slot specifically: unlike Groq/Cerebras/Mistral/
+    Gemini, which always carry a real (hardcoded or defaulted) base_url and model
     regardless of env vars, the fallback entry's base_url/model have NO
     default -- so an operator who sets QA_FALLBACK_API_KEY without also
     setting QA_FALLBACK_BASE_URL/QA_FALLBACK_MODEL would otherwise "count"
@@ -344,14 +408,23 @@ def _configured_providers() -> List[dict]:
     return [p for p in config.AI_PROVIDERS if p.get("api_key") and p.get("base_url") and p.get("model")]
 
 
-def _call_with_fallback(make_request: Callable[[OpenAI, str], _T]) -> _T:
+def _call_with_fallback(make_request: Callable[[OpenAI, str], _T]) -> tuple[_T, str, str]:
     """Try each configured provider in order. Each provider still gets
     config.AI_RETRY_MAX_ATTEMPTS retries for its own transient/rate-limit
     errors (via _call_with_retry) before this moves on to the next
     provider -- so a single 429 doesn't burn a fallback hop, only a
     provider that's still failing after its own retries does. Raises the
     last provider's exception if every provider fails, so callers' existing
-    except-Exception handling around the whole call is unchanged."""
+    except-Exception handling around the whole call is unchanged.
+
+    Returns (result, provider_name, model) -- not just the raw result --
+    so a caller (review_code) can record which provider actually answered.
+    Added 2026-09-07: without this, there was no way to tell from a QA
+    report whether a review was served by Groq, Cerebras, Mistral, or a
+    configured QA_FALLBACK_MODEL -- which mattered concretely during a
+    live Z13-fallback test the same day, where two concurrent calls
+    (review + test generation) could and did land on different providers
+    without any way to tell which was which after the fact."""
     providers = _configured_providers()
     if not providers:
         raise ValueError(
@@ -366,7 +439,8 @@ def _call_with_fallback(make_request: Callable[[OpenAI, str], _T]) -> _T:
     for i, provider in enumerate(providers):
         client = OpenAI(base_url=provider["base_url"], api_key=provider["api_key"])
         try:
-            return _call_with_retry(lambda: make_request(client, provider["model"]))
+            result = _call_with_retry(lambda: make_request(client, provider["model"]))
+            return result, provider["name"], provider["model"]
         except Exception as e:  # pylint: disable=broad-except
             last_error = e
             remaining = [p["name"] for p in providers[i + 1:]]
@@ -555,9 +629,9 @@ restate it at a higher severity than shown here.
         # failure rather than a false-pass empty review -- this just
         # avoids paying that latency/token cost on every call in the first
         # place. Scoped to QA_FALLBACK_MODEL only via extra_body: an
-        # unrecognized top-level "think" key sent to Groq/Cerebras/Mistral
-        # could be rejected by their own strict schema validation, so this
-        # must never apply to the other three providers.
+        # unrecognized top-level "think" key sent to Groq/Cerebras/Mistral/
+        # Gemini could be rejected by their own strict schema validation,
+        # so this must never apply to the other four providers.
         #
         # QA_FALLBACK_REASONING_EFFORT (config.py), when set, replaces
         # think:false with an explicit reasoning_effort instead -- see that
@@ -604,7 +678,7 @@ restate it at a higher severity than shown here.
         return _parse_review_json(response.choices[0].message.content)
 
     try:
-        data = _call_with_fallback(_make_request)
+        data, review.provider, review.provider_model = _call_with_fallback(_make_request)
     except json.JSONDecodeError as e:
         # json.JSONDecodeError IS-A ValueError, so this must be caught
         # BEFORE the bare ValueError branch below or it'd be swallowed by
@@ -737,7 +811,7 @@ def generate_tests(
         return {"think": False}
 
     try:
-        response = _call_with_fallback(lambda client, model: client.chat.completions.create(
+        response, _, _ = _call_with_fallback(lambda client, model: client.chat.completions.create(
             model=model,
             messages=[
                 {"role": "system", "content": _get_test_prompt(language)},
