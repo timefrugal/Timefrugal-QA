@@ -1,8 +1,9 @@
 """
 AI-powered code review using a chain of free-tier providers (Groq, then
-Cerebras, then Mistral, then an optional env-gated last-resort fallback --
-see config.AI_PROVIDERS for the authoritative order) — no extra billing on
-any of them. Providers are tried in order; a provider that's out of quota,
+Cerebras, then Mistral, then Gemini, then an optional env-gated
+last-resort fallback -- see config.AI_PROVIDERS for the authoritative
+order) — no extra billing on any of them. Providers are tried in order;
+a provider that's out of quota,
 down, returns unparseable content, or simply not configured (missing API
 key) is skipped in favor of the next one, so a single provider running out
 (or misbehaving) doesn't take the whole AI review down. (GitHub Models,
@@ -395,8 +396,8 @@ def _configured_providers() -> List[dict]:
     providers lack keys.
 
     Requiring all three (not just api_key) matters for the generic
-    QA_FALLBACK_* 4th slot specifically: unlike Groq/Cerebras/Mistral,
-    which always carry a real (hardcoded or defaulted) base_url and model
+    QA_FALLBACK_* 5th slot specifically: unlike Groq/Cerebras/Mistral/
+    Gemini, which always carry a real (hardcoded or defaulted) base_url and model
     regardless of env vars, the fallback entry's base_url/model have NO
     default -- so an operator who sets QA_FALLBACK_API_KEY without also
     setting QA_FALLBACK_BASE_URL/QA_FALLBACK_MODEL would otherwise "count"
@@ -628,9 +629,9 @@ restate it at a higher severity than shown here.
         # failure rather than a false-pass empty review -- this just
         # avoids paying that latency/token cost on every call in the first
         # place. Scoped to QA_FALLBACK_MODEL only via extra_body: an
-        # unrecognized top-level "think" key sent to Groq/Cerebras/Mistral
-        # could be rejected by their own strict schema validation, so this
-        # must never apply to the other three providers.
+        # unrecognized top-level "think" key sent to Groq/Cerebras/Mistral/
+        # Gemini could be rejected by their own strict schema validation,
+        # so this must never apply to the other four providers.
         #
         # QA_FALLBACK_REASONING_EFFORT (config.py), when set, replaces
         # think:false with an explicit reasoning_effort instead -- see that

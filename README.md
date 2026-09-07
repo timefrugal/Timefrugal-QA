@@ -137,20 +137,21 @@ pip install pre-commit
 pre-commit install
 ```
 
-At least one of `GROQ_API_KEY` / `CEREBRAS_API_KEY` / `MISTRAL_API_KEY` must be set in your environment for the AI review to run.
+At least one of `GROQ_API_KEY` / `CEREBRAS_API_KEY` / `MISTRAL_API_KEY` / `GEMINI_API_KEY` must be set in your environment for the AI review to run.
 
 ---
 
 ## AI provider chain
 
-AI review tries providers in order — Groq first, then Cerebras, then Mistral, then an optional 4th last-resort provider — falling back automatically to the next one if a provider is out of quota, down, returns unparseable content, or simply not configured. You only need **one** key to get AI review working; adding more just buys headroom against any single free tier's rate limits (this is exactly what happened during development: a single PR's diff hit Groq's 12K TPM ceiling outright).
+AI review tries providers in order — Groq first, then Cerebras, then Mistral, then Gemini, then an optional 5th last-resort provider — falling back automatically to the next one if a provider is out of quota, down, returns unparseable content, or simply not configured. You only need **one** key to get AI review working; adding more just buys headroom against any single free tier's rate limits (this is exactly what happened during development: a single PR's diff hit Groq's 12K TPM ceiling outright, and later, Groq and Mistral were rate-limited simultaneously).
 
 | Provider | Free tier | Get a key |
 |----------|-----------|-----------|
 | [Groq](https://console.groq.com) | `openai/gpt-oss-120b`, 8K TPM, 200K TPD | [console.groq.com/keys](https://console.groq.com/keys) |
 | [Cerebras](https://cloud.cerebras.ai) | `gpt-oss-120b`, 30K TPM, 1M TPD | [cloud.cerebras.ai](https://cloud.cerebras.ai) — free credits require adding a payment method on Cerebras' side, worth knowing before signing up |
 | [Mistral](https://console.mistral.ai) | `mistral-small-latest` ("Experiment" tier) | [console.mistral.ai](https://console.mistral.ai) — the free Experiment tier requires opting into data training on your inputs to unlock its full quota |
-| 4th: last-resort fallback (`QA_FALLBACK_*`) | Whatever you point it at | Not a named cloud service — a generic OpenAI-SDK-compatible endpoint you control (base URL, key, and model all self-supplied). Only reached once Groq, Cerebras, AND Mistral have all failed or are unconfigured. Added for consumer repos that want a self-hosted/private last resort (e.g. jarvis-infra's Z13 gateway) rather than relying purely on free cloud tiers. |
+| [Gemini](https://ai.google.dev) | `gemini-3.8-flash`, genuinely free & ongoing (not a trial) | [aistudio.google.com](https://aistudio.google.com) — a separate quota pool from Groq/Cerebras/Mistral, so it's unlikely to be exhausted at the same time as them |
+| 5th: last-resort fallback (`QA_FALLBACK_*`) | Whatever you point it at | Not a named cloud service — a generic OpenAI-SDK-compatible endpoint you control (base URL, key, and model all self-supplied). Only reached once Groq, Cerebras, Mistral, AND Gemini have all failed or are unconfigured. Added for consumer repos that want a self-hosted/private last resort (e.g. jarvis-infra's Z13 gateway) rather than relying purely on free cloud tiers. |
 
 A provider whose key isn't set is silently skipped, not an error — only having zero configured providers fails closed with a clear message. A provider that responds but returns content that doesn't parse as the expected review JSON is also treated as a failure for that provider (not a silent pass-through), so the chain still advances to the next one.
 
@@ -174,9 +175,10 @@ All config is via environment variables:
 | `QA_AI_MODEL` | `openai/gpt-oss-120b` | Groq model (first provider in the chain) |
 | `QA_AI_MODEL_CEREBRAS` | `gpt-oss-120b` | Cerebras model (fallback) |
 | `QA_AI_MODEL_MISTRAL` | `mistral-small-latest` | Mistral model (fallback) |
-| `QA_FALLBACK_BASE_URL` | _(none)_ | Base URL for the 4th, last-resort fallback provider — **required together with** `QA_FALLBACK_API_KEY`/`QA_FALLBACK_MODEL`; the provider is only considered configured once all three are set (a partial set is treated as unconfigured, not an error) |
-| `QA_FALLBACK_API_KEY` | _(none)_ | Auth for the 4th, last-resort fallback provider |
-| `QA_FALLBACK_MODEL` | _(none)_ | Model name for the 4th, last-resort fallback provider |
+| `QA_AI_MODEL_GEMINI` | `gemini-3.8-flash` | Gemini model (fallback) |
+| `QA_FALLBACK_BASE_URL` | _(none)_ | Base URL for the 5th, last-resort fallback provider — **required together with** `QA_FALLBACK_API_KEY`/`QA_FALLBACK_MODEL`; the provider is only considered configured once all three are set (a partial set is treated as unconfigured, not an error) |
+| `QA_FALLBACK_API_KEY` | _(none)_ | Auth for the 5th, last-resort fallback provider |
+| `QA_FALLBACK_MODEL` | _(none)_ | Model name for the 5th, last-resort fallback provider |
 | `QA_AI_MAX_TOKENS` | `3000` | Max tokens per AI response |
 | `QA_AI_RETRY_MAX_ATTEMPTS` | `3` | Retries on rate-limit (HTTP 429) or an *unhinted* 5xx, per provider, before falling back to the next one |
 | `QA_AI_RETRY_BASE_DELAY` | `5.0` | Base delay in seconds for the above retries (doubles each attempt) |
@@ -184,7 +186,7 @@ All config is via environment variables:
 | `QA_MAX_COMPLEXITY` | `10` | Cyclomatic complexity threshold |
 | `QA_REPORT_FILE` | `qa_report.md` | Local report output path |
 
-To use a different (still free) model for any provider, set the matching `QA_AI_MODEL`/`QA_AI_MODEL_CEREBRAS`/`QA_AI_MODEL_MISTRAL` env var — see each provider's own docs for current model catalogs.
+To use a different (still free) model for any provider, set the matching `QA_AI_MODEL`/`QA_AI_MODEL_CEREBRAS`/`QA_AI_MODEL_MISTRAL`/`QA_AI_MODEL_GEMINI` env var — see each provider's own docs for current model catalogs.
 
 ---
 

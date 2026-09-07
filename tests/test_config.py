@@ -53,7 +53,7 @@ class TestFallbackProviderEnvWiring(unittest.TestCase):
             "QA_FALLBACK_MODEL": "gpt-oss-120b",
         })
         names = [p["name"] for p in reloaded.AI_PROVIDERS]
-        self.assertEqual(names, ["groq", "cerebras", "mistral", "fallback"])
+        self.assertEqual(names, ["groq", "cerebras", "mistral", "gemini", "fallback"])
 
     def test_fallback_entry_reads_its_three_env_vars_by_exact_name(self):
         reloaded = _reload_config_with_env({
@@ -135,6 +135,7 @@ class TestFallbackProviderEnvWiring(unittest.TestCase):
             "GROQ_API_KEY": "",
             "CEREBRAS_API_KEY": "",
             "MISTRAL_API_KEY": "",
+            "GEMINI_API_KEY": "",
             "QA_FALLBACK_API_KEY": "",
         })
         with self.assertRaises(ValueError) as ctx:
@@ -171,6 +172,59 @@ class TestGroqDefaultModel(unittest.TestCase):
         reloaded = _reload_config_with_env({"QA_AI_MODEL": "some/other-model"})
         self.assertEqual(reloaded.AI_MODEL, "some/other-model")
         self.assertEqual(reloaded.AI_PROVIDERS[0]["model"], "some/other-model")
+
+
+class TestGeminiProvider(unittest.TestCase):
+    """Added 2026-09-07 after Groq AND Mistral were simultaneously
+    rate-limited for hours on a real PR (timefrugal/Timefrugal-QA#32) --
+    Gemini is a fourth named provider on a separate, genuinely ongoing
+    free-tier quota pool, positioned between Mistral and the generic
+    QA_FALLBACK_* last-resort slot."""
+
+    def tearDown(self):
+        importlib.reload(config_module)
+
+    def test_gemini_is_fourth_provider_before_fallback(self):
+        reloaded = _reload_config_with_env({})
+        names = [p["name"] for p in reloaded.AI_PROVIDERS]
+        self.assertEqual(names, ["groq", "cerebras", "mistral", "gemini", "fallback"])
+
+    def test_gemini_has_a_real_default_base_url_and_model(self):
+        # Unlike the generic QA_FALLBACK_* slot, Gemini (like Groq/
+        # Cerebras/Mistral) is a named service with a real default --
+        # only GEMINI_API_KEY needs to be set for it to activate.
+        reloaded = _reload_config_with_env({})
+        gemini = reloaded.AI_PROVIDERS[3]
+        self.assertEqual(gemini["name"], "gemini")
+        self.assertEqual(
+            gemini["base_url"],
+            "https://generativelanguage.googleapis.com/v1beta/openai/",
+        )
+        self.assertEqual(gemini["model"], "gemini-3.8-flash")
+
+    def test_gemini_api_key_env_var_reaches_the_provider_entry(self):
+        reloaded = _reload_config_with_env({"GEMINI_API_KEY": "gm-test-key"})
+        gemini = reloaded.AI_PROVIDERS[3]
+        self.assertEqual(gemini["api_key"], "gm-test-key")
+
+    def test_qa_ai_model_gemini_env_override_reaches_the_gemini_provider_entry(self):
+        reloaded = _reload_config_with_env({"QA_AI_MODEL_GEMINI": "gemini-flash-lite"})
+        self.assertEqual(reloaded.AI_MODEL_GEMINI, "gemini-flash-lite")
+        self.assertEqual(reloaded.AI_PROVIDERS[3]["model"], "gemini-flash-lite")
+
+    def test_gemini_silently_skipped_when_api_key_unset(self):
+        from qa_agent import ai_review
+
+        _reload_config_with_env({"GEMINI_API_KEY": ""})
+        configured_names = [p["name"] for p in ai_review._configured_providers()]
+        self.assertNotIn("gemini", configured_names)
+
+    def test_gemini_configured_when_api_key_set(self):
+        from qa_agent import ai_review
+
+        _reload_config_with_env({"GEMINI_API_KEY": "gm-test-key"})
+        configured_names = [p["name"] for p in ai_review._configured_providers()]
+        self.assertIn("gemini", configured_names)
 
 
 if __name__ == "__main__":
