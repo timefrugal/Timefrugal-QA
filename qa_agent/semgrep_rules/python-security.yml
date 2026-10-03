@@ -81,16 +81,31 @@ rules:
           - pattern-either:
               - pattern: $BASE / $SEG
               - pattern: os.path.join($BASE, $SEG)
+          # $BASE must still *look* like a base directory: this rule keys on naming
+          # convention on purpose rather than firing on every `/` join. Three accepted
+          # shapes: (1) an ALL-CAPS constant, optionally module-private or dotted
+          # (CACHE_DIR, _SPOOL, kext.QUARANTINE); (2) an identifier or attribute chain
+          # whose last component ends in a dir/root/path/folder word (root, skills_dir,
+          # self.dir, self.spool_root, baseDir); (3) a subscript whose string key ends
+          # in one (cfg["proposals_dir"], config["paths"]["spool_root"]).
+          # The original ^[A-Z][A-Z0-9_]*$ matched only shape (1) and missed ~80% of
+          # real join sites (jarvis-infra #407).
           - metavariable-regex:
               metavariable: $BASE
-              regex: ^[A-Z][A-Z0-9_]*$
+              regex: ^(?:(?:[\w.]*\.)?_?[A-Z][A-Z0-9_]*|[\w.]*(?:\[[^\]]*\])*(?:\[\s*["']\w*)?(?:dir|root|path|folder|Dir|Root|Path|Folder)s?(?:["']\s*\])?(?:\(\))?)$
           - metavariable-regex:
               metavariable: $SEG
               regex: ^(?![frbuFRBU]{0,3}["']).*$
     pattern-sanitizers:
+      # NOTE: abspath/realpath on their own only *normalize* a path, they do not
+      # prove containment. They are accepted here (as abspath already was) because
+      # every correct containment guard in practice starts with one of them and then
+      # prefix-compares; treating them as sanitizers deliberately trades a few false
+      # negatives for a much lower false positive rate on code that does check.
       - pattern: $X.resolve()
       - pattern: $X.is_relative_to(...)
       - pattern: os.path.abspath(...)
+      - pattern: os.path.realpath(...)
     pattern-sinks:
       - patterns:
           - pattern-either:
@@ -105,9 +120,18 @@ rules:
               - pattern: $SINK.unlink(...)
               - pattern: $SINK.mkdir(...)
               - pattern: open($SINK, ...)
+              - pattern: os.makedirs($SINK, ...)
+              - pattern: os.remove($SINK, ...)
+              - pattern: os.rename($SINK, ...)
+              - pattern: os.rename(..., $SINK)
+              - pattern: os.replace($SINK, ...)
+              - pattern: os.replace(..., $SINK)
+              - pattern: shutil.copyfile($SINK, ...)
+              - pattern: shutil.copyfile(..., $SINK)
+              - pattern: glob.glob($SINK, ...)
           - focus-metavariable: $SINK
     message: >
-      A filesystem path was built by joining a base-directory-looking variable (e.g. CACHE_DIR)
+      A filesystem path was built by joining a base-directory-looking variable (e.g. CACHE_DIR, skills_dir, self.spool_root, cfg["proposals_dir"])
       with another value via the `/` operator or os.path.join(), then used for a filesystem
       read/write/exists/glob/open operation without first resolving it and verifying containment
       (.resolve() + is_relative_to(), or an equivalent prefix check). pathlib's `/` operator (and
