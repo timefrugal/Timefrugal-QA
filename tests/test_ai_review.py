@@ -16,7 +16,10 @@ from qa_agent.ai_review import (
     AIFinding,
     _call_with_retry,
     _demote_if_outside_diff,
+    _diff_anchored_window,
     _get_review_prompt,
+    _group_changed_hunks,
+    _line_bounded_truncate,
     _parse_review_json,
     _per_file_char_budget,
     _retry_after_seconds,
@@ -1254,6 +1257,189 @@ class TestCallWithRetry(unittest.TestCase):
             with self.assertRaises(openai.InternalServerError):
                 _call_with_retry(fn)
         self.assertEqual(fn.call_count, 5)  # AI_FALLBACK_RETRY_MAX_ATTEMPTS
+
+
+class TestGroupChangedHunks(unittest.TestCase):
+    """_group_changed_hunks collapses a flat changed-line set into
+    contiguous runs, merging runs that are close enough together that
+    independently padding each would just make them overlap."""
+
+    def test_empty_input_yields_no_hunks(self):
+        self.assertEqual(_group_changed_hunks(set()), [])
+
+    def test_single_contiguous_run(self):
+        self.assertEqual(_group_changed_hunks({10, 11, 12}), [(10, 12)])
+
+    def test_far_apart_lines_stay_separate_hunks(self):
+        self.assertEqual(
+            _group_changed_hunks({10, 500}, merge_gap=30),
+            [(10, 10), (500, 500)],
+        )
+
+    def test_nearby_scattered_lines_merge_into_one_hunk(self):
+        # Timefrugal-QA#35 data point 1's real shape: a 5-line diff
+        # (112, 114, 116, 119, 121) spread across 10 lines of one file.
+        self.assertEqual(
+            _group_changed_hunks({112, 114, 116, 119, 121}, merge_gap=30),
+            [(112, 121)],
+        )
+
+
+class TestLineBoundedTruncate(unittest.TestCase):
+    """Head-truncation must only ever cut on a whole-line boundary -- a
+    raw character slice can land mid-identifier, which Timefrugal-QA#35's
+    data point 2 showed gets read by the AI as a real syntax error once
+    the truncation marker is appended right after it."""
+
+    def test_content_under_cap_is_returned_whole_with_no_marker(self):
+        lines = ["short line one", "short line two"]
+        result = _line_bounded_truncate(lines, cap=1000, marker="MARK")
+        self.assertEqual(result, "short line one\nshort line two")
+        self.assertNotIn("MARK", result)
+
+    def test_truncation_never_splits_a_line_mid_token(self):
+        lines = [f"line_{i}_" + "x" * 20 for i in range(50)]
+        result = _line_bounded_truncate(lines, cap=100, marker="MARK")
+        body = result.rsplit("MARK", 1)[0].rstrip("\n")
+        for shown_line in body.split("\n"):
+            self.assertIn(shown_line, lines)  # every emitted line is a COMPLETE original line
+        self.assertTrue(result.endswith("MARK"))
+
+    def test_cap_too_small_for_even_one_line_yields_just_the_marker(self):
+        result = _line_bounded_truncate(["a very long line indeed"], cap=3, marker="MARK")
+        self.assertEqual(result, "MARK")
+
+
+class TestDiffAnchoredWindow(unittest.TestCase):
+    """_diff_anchored_window replaces review_code's old content[:cap] head
+    truncation. Timefrugal-QA#35: that old behavior was byte-anchored at
+    file start, independent of where the diff's own changes live -- on a
+    large enough file, the edited code itself (and anything nearby it
+    depends on) could fall entirely outside the 6000-char window shown to
+    the AI reviewer."""
+
+    def _make_file(self, total_lines, hunk_start, hunk_end, helper_line):
+        """A synthetic file shaped like Timefrugal-QA#35's own data point
+        1: boilerplate at the top, an edited function partway through,
+        and a helper function the edit depends on defined a bit further
+        down -- all well past where a byte-0 cutoff at a few KB would
+        reach."""
+        lines = [f"// boilerplate line {i}" for i in range(1, hunk_start)]
+        lines += [f"edited_line_{i}();" for i in range(hunk_start, hunk_end + 1)]
+        lines += [f"// filler {i}" for i in range(hunk_end + 1, helper_line)]
+        lines.append("function helper() { return 1; }")
+        lines += [f"// trailer {i}" for i in range(helper_line + 1, total_lines + 1)]
+        return "\n".join(lines), helper_line
+
+    def test_content_at_or_under_cap_is_returned_unchanged(self):
+        content = "line one\nline two"
+        self.assertEqual(_diff_anchored_window(content, {1}, cap=1000), content)
+
+    def test_no_file_ranges_falls_back_to_line_bounded_head_truncate(self):
+        content, _ = self._make_file(total_lines=500, hunk_start=300, hunk_end=305, helper_line=320)
+        result = _diff_anchored_window(content, None, cap=200)
+        self.assertNotIn("edited_line_300", result)  # old byte-0-anchored behavior: edit is out of view
+        self.assertIn("boilerplate line 1\n", result)
+        self.assertTrue(result.rstrip().endswith("not source code>>"))
+
+    def test_window_includes_the_edited_hunk_even_far_past_a_small_cap(self):
+        # The core regression case: with the OLD content[:cap] behavior,
+        # a cap this small relative to a 500-line file would never reach
+        # line 300 at all. The new window is anchored on the hunk, so the
+        # edited lines show up regardless of their distance from file
+        # start.
+        content, _ = self._make_file(total_lines=500, hunk_start=300, hunk_end=305, helper_line=320)
+        result = _diff_anchored_window(content, {300, 301, 302, 303, 304, 305}, cap=800)
+        for i in range(300, 306):
+            self.assertIn(f"edited_line_{i}();", result)
+
+    def test_window_can_reach_a_nearby_helper_outside_the_hunk_itself(self):
+        # Reproduces the shape of Timefrugal-QA#35 data point 1: the
+        # diff's own hunk doesn't include the helper it calls, but the
+        # helper is close enough that the grown window still reaches it
+        # within budget.
+        content, helper_line = self._make_file(
+            total_lines=500, hunk_start=300, hunk_end=305, helper_line=320
+        )
+        result = _diff_anchored_window(content, {300, 301, 302, 303, 304, 305}, cap=1500)
+        self.assertIn("function helper()", result)
+
+    def test_omitted_regions_are_reported_as_whole_marker_lines_not_mid_line(self):
+        content, _ = self._make_file(total_lines=500, hunk_start=300, hunk_end=302, helper_line=310)
+        result = _diff_anchored_window(content, {300, 301, 302}, cap=400)
+        for line in result.split("\n"):
+            if "Timefrugal-QA" in line:
+                self.assertTrue(line.startswith("<<Timefrugal-QA:"))
+                self.assertTrue(line.endswith(">>"))
+
+    def test_hunk_core_alone_bigger_than_cap_still_shows_the_hunk_first(self):
+        content, _ = self._make_file(total_lines=100, hunk_start=10, hunk_end=90, helper_line=95)
+        result = _diff_anchored_window(content, set(range(10, 91)), cap=50)
+        self.assertIn("edited_line_10();", result)
+        self.assertNotIn("boilerplate", result)
+
+    def test_line_numbers_past_end_of_file_are_clamped_not_an_error(self):
+        content = "\n".join(f"line {i}" for i in range(1, 11))
+        result = _diff_anchored_window(content, {9, 10, 999}, cap=50)
+        self.assertIn("line 9", result)  # does not raise despite the out-of-range 999
+
+
+class TestReviewCodeUsesDiffAnchoredWindow(unittest.TestCase):
+    """Integration: review_code's prompt-building must actually route
+    through the diff-anchored window above, not a leftover raw slice."""
+
+    def _capture_user_content(self, file_contents, changed_line_ranges):
+        providers = [_fake_provider("groq")]
+        captured = {}
+
+        class _FakeMessage:
+            content = '{"summary": "ok", "architecture_notes": "", "findings": []}'
+
+        class _FakeChoice:
+            message = _FakeMessage()
+
+        class _FakeResponse:
+            choices = [_FakeChoice()]
+
+        class _FakeCompletions:
+            def create(self, **kwargs):
+                captured["user_content"] = kwargs["messages"][1]["content"]
+                return _FakeResponse()
+
+        class _FakeChat:
+            completions = _FakeCompletions()
+
+        class _FakeClient:
+            chat = _FakeChat()
+
+        with mock.patch.object(config, "AI_PROVIDERS", providers), \
+                mock.patch.object(ai_review, "OpenAI", lambda base_url=None, api_key=None: _FakeClient()), \
+                mock.patch.object(config, "AI_MAX_TOTAL_CONTENT_CHARS", 800):
+            ai_review.review_code(
+                file_contents,
+                AnalysisResults(),
+                repo_name="test-repo",
+                language="javascript",
+                changed_line_ranges=changed_line_ranges,
+            )
+        return captured["user_content"]
+
+    def test_prompt_contains_the_edited_region_despite_a_tight_budget(self):
+        lines = [f"// filler {i}" for i in range(1, 200)]
+        lines += [f"edited_{i}();" for i in range(200, 205)]
+        content = "\n".join(lines)
+        prompt = self._capture_user_content(
+            {"app.js": content}, {"app.js": {200, 201, 202, 203, 204}}
+        )
+        self.assertIn("edited_200();", prompt)
+
+    def test_no_changed_line_ranges_falls_back_to_head_truncation(self):
+        lines = [f"// filler {i}" for i in range(1, 200)]
+        lines += [f"edited_{i}();" for i in range(200, 205)]
+        content = "\n".join(lines)
+        prompt = self._capture_user_content({"app.js": content}, None)
+        self.assertNotIn("edited_200();", prompt)
+        self.assertIn("filler 1\n", prompt)
 
 
 if __name__ == "__main__":

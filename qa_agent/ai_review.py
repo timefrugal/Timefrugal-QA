@@ -311,6 +311,179 @@ def _per_file_char_budget(file_count: int, per_file_cap: int, floor: int = 500) 
     return max(floor, min(per_file_cap, config.AI_MAX_TOTAL_CONTENT_CHARS // file_count))
 
 
+_TRUNCATION_MARKER = "<<Timefrugal-QA: remainder of file truncated, not source code>>"
+_DIFF_WINDOW_MAX_PAD_LINES = 200
+
+
+def _group_changed_hunks(line_numbers: set, merge_gap: int = 30) -> list:
+    """Collapse a flat set of changed new-file line numbers (as returned by
+    agent.get_changed_line_ranges()) into contiguous (start, end) runs,
+    merging separate runs that fall within `merge_gap` lines of each
+    other. Several single-line edits a few lines apart inside the same
+    function (common -- see Timefrugal-QA#35's own data point 1, a 5-line
+    diff spread across 10 lines) are deliberately treated as one hunk
+    here: left unmerged, each would grow its own padded window in
+    _diff_anchored_window and immediately start overlapping the others,
+    which _union_window_chars' dedup would otherwise have to absorb on
+    every growth step for no benefit."""
+    if not line_numbers:
+        return []
+    ordered = sorted(line_numbers)
+    hunks = []
+    start = prev = ordered[0]
+    for n in ordered[1:]:
+        if n - prev <= merge_gap:
+            prev = n
+            continue
+        hunks.append((start, prev))
+        start = prev = n
+    hunks.append((start, prev))
+    return hunks
+
+
+def _merge_line_windows(windows: list) -> list:
+    merged: list = []
+    for w in sorted(windows, key=lambda w: w["lo"]):
+        if merged and w["lo"] <= merged[-1]["hi"] + 1:
+            merged[-1]["hi"] = max(merged[-1]["hi"], w["hi"])
+        else:
+            merged.append({"lo": w["lo"], "hi": w["hi"]})
+    return merged
+
+
+def _union_window_chars(windows: list, lines: list) -> int:
+    """Char cost of the union of these (possibly overlapping) 1-indexed
+    inclusive line windows -- NOT the sum of each window's own length,
+    which would double-count any line more than one growing window
+    covers and exhaust the budget far earlier than the actual rendered
+    content warrants."""
+    merged = _merge_line_windows(windows)
+    return sum(len(lines[i]) + 1 for w in merged for i in range(w["lo"] - 1, w["hi"]))
+
+
+def _line_bounded_truncate(lines: list, cap: int, marker: str) -> str:
+    """Head-truncate on whole-line boundaries only -- never a raw
+    character slice, which can land mid-identifier and, placed right next
+    to a truncation marker, reads to the AI as a real syntax error rather
+    than this tool's own artifact (Timefrugal-QA#35, data point 2: a
+    snapped-off `self._assert_leak` right before the old bare
+    "... [truncated]" marker was read as a hallucinated CRITICAL
+    SyntaxError)."""
+    out: list = []
+    total = 0
+    for line in lines:
+        cost = len(line) + 1
+        if total + cost > cap:
+            out.append(marker)
+            return "\n".join(out)
+        out.append(line)
+        total += cost
+    return "\n".join(out)
+
+
+def _diff_anchored_window(content: str, file_ranges, cap: int) -> str:
+    """Build the "full content for context" shown to the AI reviewer for
+    one file, bounded to `cap` chars and anchored around the diff's own
+    changed lines rather than always truncating from byte/line 0.
+
+    Timefrugal-QA#35: a flat head-truncation at `content[:cap]` can (and
+    on real PRs did) end entirely before reaching the function the diff
+    actually edits once a touched file exceeds `cap` and the edit isn't
+    near the top -- the model was reviewing a diff against context that
+    structurally never contained the edited code at all, not failing to
+    use context it had.
+
+    `file_ranges` is this file's entry from agent.get_changed_line_ranges()
+    -- a flat set of new-file line numbers the diff touched. Falls back to
+    plain head-truncation (still line-bounded) when there's no diff info
+    for this file -- an older caller that hasn't computed
+    changed_line_ranges, or a file with no parseable hunks.
+
+    Each changed hunk (nearby hunks already merged by
+    _group_changed_hunks) starts as a window covering exactly its changed
+    lines, then grows outward one line at a time, alternating before/after
+    on every hunk in turn, until the shared `cap` budget or
+    _DIFF_WINDOW_MAX_PAD_LINES is reached on every side. Deliberately
+    alternates rather than always extending whichever side's very next
+    line is cheapest: a cheapest-first rule starves whichever side's next
+    line happens to be long relative to the other side's -- exactly the
+    case for a real line of code (a helper's own definition, say) sitting
+    next to short filler/comment lines on the other side, so it would
+    reliably avoid growing into the one place real code actually lives.
+    Alternation instead keeps spending on both sides every round as long
+    as the running total still fits, so a real reproduction of this
+    issue's own data point 1 (a diff-adjacent helper definition, used by
+    the edited code but defined ~60 lines away in the same file) lands
+    inside the grown window well before the budget runs out."""
+    lines = content.splitlines()
+    if len(content) <= cap:
+        return content
+    if not file_ranges:
+        return _line_bounded_truncate(lines, cap, _TRUNCATION_MARKER)
+
+    hunks = _group_changed_hunks(file_ranges)
+    windows = []
+    for s, e in hunks:
+        s = max(1, s)
+        e = min(len(lines), e)
+        if s > e:
+            continue
+        windows.append({
+            "lo": s, "hi": e,
+            "min_lo": max(1, s - _DIFF_WINDOW_MAX_PAD_LINES),
+            "max_hi": min(len(lines), e + _DIFF_WINDOW_MAX_PAD_LINES),
+        })
+    if not windows:
+        return _line_bounded_truncate(lines, cap, _TRUNCATION_MARKER)
+
+    if _union_window_chars(windows, lines) > cap:
+        # Pathological: even the raw changed lines across every hunk in
+        # this file exceed its own share of the budget. Show as much of
+        # the actual changed content as fits, in order -- the padding
+        # loop below assumes the core already fits and isn't meaningful
+        # here.
+        core_lines = []
+        for w in windows:
+            core_lines.extend(lines[w["lo"] - 1:w["hi"]])
+        return _line_bounded_truncate(core_lines, cap, _TRUNCATION_MARKER)
+
+    progressed = True
+    toggle = 0
+    while progressed:
+        progressed = False
+        for w in windows:
+            primary = "before" if toggle % 2 == 0 else "after"
+            toggle += 1
+            secondary = "after" if primary == "before" else "before"
+            for direction in (primary, secondary):
+                if direction == "before" and w["lo"] <= w["min_lo"]:
+                    continue
+                if direction == "after" and w["hi"] >= w["max_hi"]:
+                    continue
+                trial = dict(w)
+                if direction == "before":
+                    trial["lo"] -= 1
+                else:
+                    trial["hi"] += 1
+                trial_windows = [trial if other is w else other for other in windows]
+                if _union_window_chars(trial_windows, lines) <= cap:
+                    w["lo"], w["hi"] = trial["lo"], trial["hi"]
+                    progressed = True
+                    break
+
+    merged = _merge_line_windows(windows)
+    parts = []
+    prev_end = 0
+    for w in merged:
+        if w["lo"] > prev_end + 1:
+            parts.append(f"<<Timefrugal-QA: {w['lo'] - prev_end - 1} line(s) omitted, not source code>>")
+        parts.extend(lines[w["lo"] - 1:w["hi"]])
+        prev_end = w["hi"]
+    if prev_end < len(lines):
+        parts.append(f"<<Timefrugal-QA: {len(lines) - prev_end} line(s) omitted, not source code>>")
+    return "\n".join(parts)
+
+
 # ──────────────────────────────────────────────
 # Retry helper
 # ──────────────────────────────────────────────
@@ -558,8 +731,9 @@ def review_code(
     per_file_cap = _per_file_char_budget(len(file_contents), per_file_cap=6000)
     code_sections = []
     for filepath, content in file_contents.items():
-        truncated = content[:per_file_cap] + ("\n... [truncated]" if len(content) > per_file_cap else "")
-        code_sections.append(f"### File: {filepath}\n```{fence}\n{truncated}\n```")
+        file_ranges = changed_line_ranges.get(filepath) if changed_line_ranges else None
+        windowed = _diff_anchored_window(content, file_ranges, per_file_cap)
+        code_sections.append(f"### File: {filepath}\n```{fence}\n{windowed}\n```")
 
     static_summary = _format_static_for_ai(static_results)
 
