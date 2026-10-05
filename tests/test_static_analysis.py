@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest import mock
 
 from qa_agent import config, static_analysis
+from qa_agent.repo_config import RepoConfig
 from qa_agent.static_analysis import (
     AnalysisResults,
     Finding,
@@ -673,6 +674,63 @@ class TestDemoteIfOutsideDiff(unittest.TestCase):
         result = _demote_if_outside_diff(finding, {"renamed.py": set()})
         self.assertEqual(result.severity, config.SEVERITY_MEDIUM)
 
+    # -- Timefrugal-QA#34: threshold-relative demotion ----------------------
+
+    def test_medium_threshold_demotes_out_of_diff_medium_finding_to_low(self):
+        # A repo with block_merge_threshold: MEDIUM (e.g. jarvis-infra) got
+        # zero protection from the old hardcoded (CRITICAL, HIGH) check --
+        # an out-of-diff MEDIUM pylint finding sailed through unchanged and
+        # blocked merges on pre-existing debt. #460/#461/#462.
+        finding = self._finding(severity="MEDIUM", line=500)
+        result = _demote_if_outside_diff(
+            finding, {"app.py": {8, 9, 10, 11}}, block_merge_threshold="MEDIUM"
+        )
+        self.assertEqual(result.severity, config.SEVERITY_LOW)
+        self.assertIn("demoted from MEDIUM", result.message)
+
+    def test_medium_threshold_demotes_out_of_diff_critical_to_low_not_medium(self):
+        # #451-class collision: demoting to a hardcoded MEDIUM is a no-op
+        # for a repo whose own block_merge_threshold IS MEDIUM. Demotion
+        # must land one tier below the *effective* threshold instead.
+        finding = self._finding(severity="CRITICAL", line=500)
+        result = _demote_if_outside_diff(
+            finding, {"app.py": {8, 9, 10, 11}}, block_merge_threshold="MEDIUM"
+        )
+        self.assertEqual(result.severity, config.SEVERITY_LOW)
+
+    def test_medium_threshold_leaves_in_diff_medium_finding_blocking(self):
+        finding = self._finding(severity="MEDIUM", line=10)
+        result = _demote_if_outside_diff(
+            finding, {"app.py": {8, 9, 10, 11}}, block_merge_threshold="MEDIUM"
+        )
+        self.assertIs(result, finding)
+        self.assertEqual(result.severity, "MEDIUM")
+
+    def test_default_high_threshold_behavior_is_unchanged(self):
+        # Superset-fix claim: omitting block_merge_threshold (or passing the
+        # default HIGH explicitly) must reproduce the original hardcoded
+        # CRITICAL/HIGH-in, MEDIUM-out behavior exactly.
+        finding = self._finding(severity="CRITICAL", line=500)
+        result = _demote_if_outside_diff(finding, {"app.py": {8, 9, 10, 11}}, "HIGH")
+        self.assertEqual(result.severity, config.SEVERITY_MEDIUM)
+
+    def test_low_threshold_out_of_diff_low_finding_demotes_to_info(self):
+        finding = self._finding(severity="LOW", line=500)
+        result = _demote_if_outside_diff(
+            finding, {"app.py": {8, 9, 10, 11}}, block_merge_threshold="LOW"
+        )
+        self.assertEqual(result.severity, config.SEVERITY_INFO)
+
+    def test_info_threshold_out_of_diff_info_finding_clamps_at_info(self):
+        # INFO is the last tier in SEVERITY_ORDER -- there's nothing below
+        # it to demote to, so the clamp must hold rather than index out of
+        # range.
+        finding = self._finding(severity="INFO", line=500)
+        result = _demote_if_outside_diff(
+            finding, {"app.py": {8, 9, 10, 11}}, block_merge_threshold="INFO"
+        )
+        self.assertEqual(result.severity, config.SEVERITY_INFO)
+
 
 class TestRunAllDiffScopingEndToEnd(unittest.TestCase):
     """
@@ -707,6 +765,40 @@ class TestRunAllDiffScopingEndToEnd(unittest.TestCase):
         self.assertEqual(by_line[10].severity, "HIGH")
         self.assertEqual(by_line[9999].severity, config.SEVERITY_MEDIUM)
         self.assertIn("demoted from CRITICAL", by_line[9999].message)
+
+    def test_run_all_demotes_relative_to_repo_configs_medium_threshold(self):
+        # End-to-end version of test_medium_threshold_demotes_out_of_diff_
+        # medium_finding_to_low: a repo_config with block_merge_threshold
+        # MEDIUM must change what run_all() itself demotes, not just the
+        # unit-level helper.
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            (Path(tmp_dir) / "app.py").write_text("print('hi')\n")
+
+            in_diff = Finding(tool="pylint", severity="MEDIUM", category="quality",
+                               file="app.py", line=10, message="real new issue")
+            out_of_diff = Finding(tool="pylint", severity="MEDIUM", category="quality",
+                                   file="app.py", line=9999, message="pre-existing debt")
+
+            def fake_pylint(files, repo_config=None, project_root="."):
+                return AnalysisResults(findings=[in_diff, out_of_diff])
+
+            with mock.patch.object(static_analysis, "run_bandit", return_value=AnalysisResults()), \
+                 mock.patch.object(static_analysis, "run_semgrep", return_value=AnalysisResults()), \
+                 mock.patch.object(static_analysis, "run_pylint", side_effect=fake_pylint), \
+                 mock.patch.object(static_analysis, "run_mypy", return_value=AnalysisResults()), \
+                 mock.patch.object(static_analysis, "run_radon", return_value=AnalysisResults()), \
+                 mock.patch.object(static_analysis, "run_pip_audit", return_value=AnalysisResults()):
+                combined = run_all(
+                    ["app.py"], project_root=tmp_dir,
+                    repo_config=RepoConfig(block_merge_threshold="MEDIUM"),
+                    changed_line_ranges={"app.py": {8, 9, 10, 11}},
+                )
+
+        by_line = {f.line: f for f in combined.findings}
+        self.assertEqual(by_line[10].severity, "MEDIUM")
+        self.assertEqual(by_line[9999].severity, config.SEVERITY_LOW)
+        self.assertIn("demoted from MEDIUM", by_line[9999].message)
+        self.assertTrue(combined.has_blocking_issues)
 
     def test_run_all_without_changed_line_ranges_is_unaffected(self):
         # Omitting the new parameter entirely must reproduce today's

@@ -62,14 +62,26 @@ class Finding:
 
 
 def _demote_if_outside_diff(finding: Finding,
-                             changed_line_ranges: Optional[Dict[str, Set[int]]]) -> Finding:
+                             changed_line_ranges: Optional[Dict[str, Set[int]]],
+                             block_merge_threshold: Optional[str] = None) -> Finding:
     """Structural counterpart to `ai_review._demote_if_outside_diff()` for
-    deterministic tool findings, not just AI ones: a CRITICAL/HIGH finding
+    deterministic tool findings, not just AI ones: a finding at or above the
+    *effective* block-merge threshold (`block_merge_threshold`, defaulting to
+    `config.BLOCK_MERGE_THRESHOLD` when the caller has no per-repo override)
     whose file:line isn't inside this PR's actual diff (per real `git diff`
-    hunk ranges from `agent.get_changed_line_ranges()`) gets demoted to
-    MEDIUM -- kept visible as a suggestion, stripped of its blocking power
-    (`AnalysisResults.has_blocking_issues` only checks the effective
-    threshold, which defaults to CRITICAL/HIGH).
+    hunk ranges from `agent.get_changed_line_ranges()`) gets demoted one tier
+    below that threshold -- kept visible as a suggestion, stripped of its
+    blocking power (`AnalysisResults.has_blocking_issues` only checks the
+    same effective threshold).
+
+    The demotion target is relative to the threshold, not a hardcoded
+    MEDIUM: a repo running the default HIGH threshold sees exactly today's
+    CRITICAL/HIGH-in, MEDIUM-out behavior, but a repo configuring a stricter
+    `block_merge_threshold` (e.g. MEDIUM) gets real protection too -- an
+    out-of-diff MEDIUM finding demotes to LOW rather than sailing through
+    unchanged, and a demoted CRITICAL/HIGH finding lands one tier below
+    MEDIUM instead of colliding with it (see jarvis-infra#451/#460,
+    Timefrugal-QA#34).
 
     Unlike the AI-review half, a bandit/semgrep/pylint/mypy finding is never
     hallucinated -- the underlying issue is real. This isn't about
@@ -96,14 +108,17 @@ def _demote_if_outside_diff(finding: Finding,
     and is demoted for the same reason."""
     if changed_line_ranges is None:
         return finding
-    if finding.severity not in (config.SEVERITY_CRITICAL, config.SEVERITY_HIGH):
+    threshold = block_merge_threshold or config.BLOCK_MERGE_THRESHOLD
+    cutoff = config.SEVERITY_ORDER.index(threshold)
+    if finding.severity not in config.SEVERITY_ORDER[:cutoff + 1]:
         return finding
     file_ranges = changed_line_ranges.get(finding.file)
     if file_ranges and finding.line in file_ranges:
         return finding
+    demoted_severity = config.SEVERITY_ORDER[min(cutoff + 1, len(config.SEVERITY_ORDER) - 1)]
     return Finding(
         tool=finding.tool,
-        severity=config.SEVERITY_MEDIUM,
+        severity=demoted_severity,
         category=finding.category,
         file=finding.file,
         line=finding.line,
@@ -797,15 +812,16 @@ def run_all(
 
     `changed_line_ranges`, when provided (`agent.get_changed_line_ranges()`'s
     return value -- the same dict already computed for the AI-review half of
-    diff-scoping), demotes any CRITICAL/HIGH finding from bandit/semgrep/
-    pylint/mypy/pmd/htmlhint/eslint whose file:line falls outside the PR's
-    actual diff down to MEDIUM (see `_demote_if_outside_diff`'s own
-    docstring) -- these tools scan whole files, so a PR touching one line of
-    a large pre-existing file would otherwise be blocked on every
-    pre-existing finding in that entire file, not just what it changed.
-    `run_tsc` already has its own, coarser (file-level, drop-not-demote)
-    version of this same fix; omitting this parameter (the default)
-    reproduces today's behavior for every other tool exactly.
+    diff-scoping), demotes any finding at or above this run's effective
+    block-merge threshold from bandit/semgrep/pylint/mypy/pmd/htmlhint/eslint
+    whose file:line falls outside the PR's actual diff down one tier below
+    that threshold (see `_demote_if_outside_diff`'s own docstring) -- these
+    tools scan whole files, so a PR touching one line of a large pre-existing
+    file would otherwise be blocked on every pre-existing finding in that
+    entire file, not just what it changed. `run_tsc` already has its own,
+    coarser (file-level, drop-not-demote) version of this same fix; omitting
+    this parameter (the default) reproduces today's behavior for every other
+    tool exactly.
     """
     combined = AnalysisResults()
 
@@ -850,8 +866,14 @@ def run_all(
                 combined.errors.append(f"{name}: unexpected error — {exc}")
 
     if changed_line_ranges is not None:
+        effective_threshold = (
+            repo_config.block_merge_threshold
+            if repo_config is not None and repo_config.block_merge_threshold
+            else config.BLOCK_MERGE_THRESHOLD
+        )
         combined.findings = [
-            _demote_if_outside_diff(f, changed_line_ranges) for f in combined.findings
+            _demote_if_outside_diff(f, changed_line_ranges, effective_threshold)
+            for f in combined.findings
         ]
 
     if repo_config is not None:
