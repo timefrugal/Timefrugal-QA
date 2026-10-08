@@ -13,6 +13,7 @@ import json
 import sys
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Callable, List, Optional, TypeVar
 
 import openai
@@ -1003,9 +1004,42 @@ def generate_tests(
             test_code = parts[1]
             if test_code.startswith("python"):
                 test_code = test_code[6:]
-        return test_code.strip()
+        test_code = test_code.strip()
+        if not _looks_related_to_source(test_code, file_contents):
+            print(
+                f"[ai_review] discarding generated tests -- no reference to any of the "
+                f"real source files ({', '.join(file_contents)}); looks unrelated/hallucinated",
+                file=sys.stderr,
+            )
+            return ""
+        return test_code
     except Exception as e:
         return f"# Error generating tests: {e}\n"
+
+
+def _looks_related_to_source(test_code: str, file_contents: dict[str, str]) -> bool:
+    """Confirmed live 2026-10-07 (maya-infra PR #104's AI QA comment): a
+    QA_FALLBACK_MODEL call for test generation returned a complete, fluent,
+    syntactically-valid pytest suite for an unrelated "Pong game" example --
+    not a caching/data-leak bug (traced the harness: it genuinely sent the
+    real source), the model just produced a stock completion instead of
+    using the input it was given. The SAME run's code-review call (a
+    separate request) correctly referenced the real files, so this is a
+    per-call reliability miss, not a systemic prompt-construction issue.
+
+    Cheap, deterministic, no second LLM call: a genuine test for these
+    files should reference at least one of them by name (an import or a
+    bare mention of the module), since pytest tests overwhelmingly import
+    what they test. Matching on the file's own stem, not any identifier
+    extracted from inside it -- simpler, and avoids false negatives from a
+    model that (correctly) renamed an internal helper in its own test setup.
+    Deliberately permissive on the no-evidence-either-way case (no
+    file_contents to check against) rather than silently discarding
+    something this check isn't designed to judge."""
+    if not test_code or not file_contents:
+        return True
+    stems = {Path(f).stem for f in file_contents if Path(f).stem}
+    return any(stem in test_code for stem in stems)
 
 
 # ──────────────────────────────────────────────
