@@ -1488,20 +1488,18 @@ class TestGenerateTestsDiscardsUnrelatedModelOutput(unittest.TestCase):
 
     def _stub_response(self, content: str):
         class _FakeMessage:
-            pass
+            def __init__(self, content):
+                self.content = content
 
         class _FakeChoice:
-            pass
+            def __init__(self, message):
+                self.message = message
 
         class _FakeResponse:
-            pass
+            def __init__(self, choices):
+                self.choices = choices
 
-        message = _FakeMessage()
-        message.content = content
-        choice = _FakeChoice()
-        choice.message = message
-        response = _FakeResponse()
-        response.choices = [choice]
+        response = _FakeResponse([_FakeChoice(_FakeMessage(content))])
 
         class _FakeCompletions:
             def create(self, **kwargs):
