@@ -20,6 +20,7 @@ from qa_agent.ai_review import (
     _get_review_prompt,
     _group_changed_hunks,
     _line_bounded_truncate,
+    _looks_related_to_source,
     _parse_review_json,
     _per_file_char_budget,
     _retry_after_seconds,
@@ -1440,6 +1441,94 @@ class TestReviewCodeUsesDiffAnchoredWindow(unittest.TestCase):
         prompt = self._capture_user_content({"app.js": content}, None)
         self.assertNotIn("edited_200();", prompt)
         self.assertIn("filler 1\n", prompt)
+
+
+class TestLooksRelatedToSourceCatchesUnrelatedGeneratedTests(unittest.TestCase):
+    """
+    Confirmed live 2026-10-07 (maya-infra PR #104): generate_tests() returned
+    a complete, syntactically-valid pytest suite for an unrelated "Pong game"
+    example instead of testing the real source it was given -- not a
+    caching/prompt bug (the harness genuinely sent the real files), a raw
+    model-reliability miss on that one call. _looks_related_to_source is the
+    deterministic guard against posting that kind of output.
+    """
+
+    def test_real_test_code_referencing_the_source_file_passes(self):
+        test_code = "from telegram_bridge import handle_ordinary_message\n\ndef test_x():\n    pass\n"
+        self.assertTrue(_looks_related_to_source(test_code, {"server/telegram_bridge.py": "..."}))
+
+    def test_unrelated_generated_content_is_rejected(self):
+        test_code = "from pong_game import PongGame, Paddle, Ball\n\nclass TestPongGame:\n    pass\n"
+        self.assertFalse(_looks_related_to_source(test_code, {"server/telegram_bridge.py": "..."}))
+
+    def test_matches_any_one_of_multiple_source_files(self):
+        test_code = "from telegram_format import chunk_markdown\n"
+        self.assertTrue(_looks_related_to_source(
+            test_code, {"server/telegram_bridge.py": "...", "server/telegram_format.py": "..."}))
+
+    def test_empty_test_code_is_permissive_not_flagged_as_unrelated(self):
+        # Empty output is handled separately downstream (callers already
+        # skip rendering an empty generated_tests section) -- this check is
+        # specifically about REJECTING unrelated content, not about judging
+        # emptiness, so it stays permissive here rather than double-handling it.
+        self.assertTrue(_looks_related_to_source("", {"server/telegram_bridge.py": "..."}))
+
+    def test_no_file_contents_to_check_against_is_permissive(self):
+        # Nothing to judge this against -- don't discard on a case this
+        # check isn't designed to handle.
+        self.assertTrue(_looks_related_to_source("anything at all", {}))
+
+
+class TestGenerateTestsDiscardsUnrelatedModelOutput(unittest.TestCase):
+    """End-to-end through the real generate_tests() -> _call_with_fallback
+    path (stubbed at the provider boundary, same pattern as
+    TestReviewCodePassesRepoConfigExtraInstructionsIntoSystemPrompt above),
+    confirming the discard actually happens where it matters, not just in
+    the helper in isolation."""
+
+    def _stub_response(self, content: str):
+        class _FakeMessage:
+            def __init__(self, content):
+                self.content = content
+
+        class _FakeChoice:
+            def __init__(self, message):
+                self.message = message
+
+        class _FakeResponse:
+            def __init__(self, choices):
+                self.choices = choices
+
+        response = _FakeResponse([_FakeChoice(_FakeMessage(content))])
+
+        class _FakeCompletions:
+            def create(self, **kwargs):
+                return response
+
+        class _FakeChat:
+            completions = _FakeCompletions()
+
+        class _FakeClient:
+            chat = _FakeChat()
+
+        def fake_call_with_fallback(make_request):
+            return make_request(_FakeClient(), "fake-model"), "fake-provider", "fake-model"
+
+        return fake_call_with_fallback
+
+    def test_unrelated_pong_game_output_is_discarded(self):
+        fake = self._stub_response("import pygame\n\nclass TestPongGame:\n    pass\n")
+        with mock.patch.object(ai_review, "_call_with_fallback", fake):
+            result = ai_review.generate_tests({"server/telegram_bridge.py": "def foo(): pass"})
+        self.assertEqual(result, "")
+
+    def test_genuinely_related_output_is_kept(self):
+        fake = self._stub_response(
+            "from telegram_bridge import foo\n\ndef test_foo():\n    assert foo() is None\n"
+        )
+        with mock.patch.object(ai_review, "_call_with_fallback", fake):
+            result = ai_review.generate_tests({"server/telegram_bridge.py": "def foo(): pass"})
+        self.assertIn("test_foo", result)
 
 
 if __name__ == "__main__":
