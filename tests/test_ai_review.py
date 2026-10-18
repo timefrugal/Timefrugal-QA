@@ -1627,3 +1627,58 @@ class TestEmptyReplyIsDescribedWithoutLeakingText(unittest.TestCase):
                                            repo_name="r", language="python")
         self.assertIn("empty AI reply from m: finish_reason=stop content_len=0 reasoning_len=40", err.getvalue())
         self.assertTrue(any("valid JSON" in e for e in review.errors))
+
+
+class TestChatTemplateTokensAreDefangedInThePromptOnly(unittest.TestCase):
+    """A diff that quotes <tool_call>-style control strings made the Z13's
+    parser fail the whole request with 500 EOF (maya-infra#239). The prompt must
+    not contain them; the model's reply must come back without the marker."""
+
+    TOKENS = ["<tool_call>", "</tool_call>", "<function=get_x>", "<|python_tag|>",
+              "<|tool_call_start|>", "<think>", "</think>", "<tool_response>"]
+
+    def test_every_control_string_is_neutralised_and_restorable(self):
+        for tok in self.TOKENS:
+            out = ai_review._defang_template_tokens(f"x = '{tok}' + y")
+            self.assertNotIn(tok, out, tok)
+            self.assertEqual(ai_review._restore_defanged(out), f"x = '{tok}' + y", tok)
+
+    def test_ordinary_angle_brackets_are_untouched(self):
+        text = "if a < b and c <= d: html = '<div class=\"x\"></div>' ; List<String> f; x<tool"
+        self.assertEqual(ai_review._defang_template_tokens(text), text)
+        self.assertEqual(ai_review._defang_template_tokens(""), "")
+
+    def test_review_prompt_is_defanged_and_reply_is_restored(self):
+        sent = {}
+
+        class _Msg:
+            content = '{"summary": "saw <​tool_call> here", "architecture_notes": "", "findings": []}'
+
+        class _Choice:
+            message = _Msg()
+            finish_reason = "stop"
+
+        class _Resp:
+            choices = [_Choice()]
+
+        class _Completions:
+            def create(self, **kwargs):
+                sent["messages"] = kwargs["messages"]
+                return _Resp()
+
+        class _Client:
+            class chat:
+                completions = _Completions()
+
+        def fake_call_with_fallback(make_request):
+            return make_request(_Client(), "m"), "p", "m"
+
+        with mock.patch.object(ai_review, "_call_with_fallback", fake_call_with_fallback):
+            review = ai_review.review_code({"g.py": "MARK = '<tool_call>'  # <function=x>"},
+                                           AnalysisResults(), repo_name="r", language="python")
+        joined = " ".join(m["content"] for m in sent["messages"])
+        self.assertNotIn("<tool_call>", joined)
+        self.assertNotIn("<function=", joined)
+        self.assertIn("MARK", joined)
+        self.assertNotIn("​", review.summary)
+        self.assertIn("<tool_call>", review.summary)
