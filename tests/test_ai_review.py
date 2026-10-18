@@ -5,6 +5,7 @@ Uses stdlib unittest (no pytest / test framework is set up in this repo yet),
 following the convention established in tests/test_repo_config.py.
 """
 import unittest
+from types import SimpleNamespace
 from unittest import mock
 
 import json
@@ -1477,3 +1478,82 @@ class TestReviewJsonSalvagedFromReasoningField(unittest.TestCase):
         review, _ = self._run('{"summary": "from content", "architecture_notes": "", "findings": []}',
                               self.GOOD)
         self.assertEqual(review.summary, "from content")
+
+
+class TestOptInStreaming(unittest.TestCase):
+    """QA_AI_STREAM=1 receives the reply as a stream so a gateway's 600 s idle
+    read timeout never trips on a long generation (maya-infra#239). Default off
+    must be today's non-streaming call, untouched."""
+
+    GOOD = '{"summary": "ok", "architecture_notes": "", "findings": []}'
+
+    @staticmethod
+    def _chunk(content=None, reasoning=None, finish=None, empty=False):
+        delta = SimpleNamespace(content=content, reasoning=reasoning)
+        choices = [] if empty else [SimpleNamespace(delta=delta, finish_reason=finish)]
+        return SimpleNamespace(choices=choices)
+
+    def _client(self, chunks, seen):
+        class _Completions:
+            def create(self_inner, **kwargs):
+                seen.update(kwargs)
+                return iter(chunks) if kwargs.get("stream") else SimpleNamespace(
+                    choices=[SimpleNamespace(message=SimpleNamespace(content="plain"), finish_reason="stop")])
+
+        return SimpleNamespace(chat=SimpleNamespace(completions=_Completions()))
+
+    def test_default_off_is_the_plain_call_and_sends_no_stream_flag(self):
+        seen = {}
+        with mock.patch.object(config, "AI_STREAM", False):
+            out = ai_review._chat_completion(self._client([], seen), model="m", messages=[])
+        self.assertNotIn("stream", seen)
+        self.assertEqual(out.choices[0].message.content, "plain")
+
+    def test_streamed_deltas_are_assembled_into_the_usual_shape(self):
+        seen = {}
+        chunks = [self._chunk(empty=True), self._chunk(reasoning="think "), self._chunk(reasoning="more"),
+                  self._chunk(content='{"a":'), self._chunk(content=" 1}", finish="stop")]
+        with mock.patch.object(config, "AI_STREAM", True):
+            out = ai_review._chat_completion(self._client(chunks, seen), model="m", messages=[])
+        self.assertTrue(seen["stream"])
+        self.assertEqual(out.choices[0].message.content, '{"a": 1}')
+        self.assertEqual(out.choices[0].message.reasoning, "think more")
+        self.assertEqual(out.choices[0].finish_reason, "stop")
+
+    def test_review_code_works_end_to_end_when_streamed(self):
+        pieces = [self.GOOD[i:i + 9] for i in range(0, len(self.GOOD), 9)]
+        seen = {}
+        client = self._client([self._chunk(content=p) for p in pieces], seen)
+
+        def fake_call_with_fallback(make_request):
+            return make_request(client, "m"), "p", "m"
+
+        with mock.patch.object(config, "AI_STREAM", True), \
+                mock.patch.object(ai_review, "_call_with_fallback", fake_call_with_fallback):
+            review = ai_review.review_code({"app.py": "print('hi')"}, AnalysisResults(),
+                                           repo_name="r", language="python")
+        self.assertTrue(seen["stream"])
+        self.assertEqual(review.summary, "ok")
+        self.assertFalse(review.errors)
+
+    def test_streamed_answer_filed_under_reasoning_is_still_salvaged(self):
+        client = self._client([self._chunk(reasoning="hmm " + self.GOOD)], {})
+
+        def fake_call_with_fallback(make_request):
+            return make_request(client, "m"), "p", "m"
+
+        import io
+        from contextlib import redirect_stderr
+        with mock.patch.object(config, "AI_STREAM", True), redirect_stderr(io.StringIO()), \
+                mock.patch.object(ai_review, "_call_with_fallback", fake_call_with_fallback):
+            review = ai_review.review_code({"app.py": "print('hi')"}, AnalysisResults(),
+                                           repo_name="r", language="python")
+        self.assertEqual(review.summary, "ok")
+
+    def test_env_parsing(self):
+        import importlib
+        for val, want in (("1", True), ("true", True), ("ON", True), ("", False), ("0", False), ("nope", False)):
+            with mock.patch.dict("os.environ", {"QA_AI_STREAM": val}):
+                importlib.reload(config)
+                self.assertEqual(config.AI_STREAM, want, val)
+        importlib.reload(config)

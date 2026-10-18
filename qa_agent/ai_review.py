@@ -14,6 +14,7 @@ import re
 import sys
 import time
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import Callable, List, Optional, TypeVar
 
 import openai
@@ -533,6 +534,33 @@ def _salvage_review_json(reasoning: str) -> Optional[str]:
     return json.dumps(found) if found is not None else None
 
 
+def _chat_completion(client: OpenAI, **kwargs):
+    """client.chat.completions.create, optionally received as a stream (QA_AI_STREAM, see config.py).
+
+    Streamed, the deltas are assembled into the same shape the callers already read: choices[0].message.content /
+    .reasoning, choices[0].finish_reason, usage (None: not requested, so a describing log line shows None). Default
+    off: the non-streaming call is returned untouched."""
+    if not config.AI_STREAM:
+        return client.chat.completions.create(**kwargs)
+    content: list = []
+    reasoning: list = []
+    finish_reason = None
+    for chunk in client.chat.completions.create(stream=True, **kwargs):
+        if not chunk.choices:
+            continue
+        choice = chunk.choices[0]
+        delta = choice.delta
+        if getattr(delta, "content", None):
+            content.append(delta.content)
+        piece = _reasoning_text(delta)
+        if piece:
+            reasoning.append(piece)
+        if getattr(choice, "finish_reason", None):
+            finish_reason = choice.finish_reason
+    message = SimpleNamespace(content="".join(content), reasoning="".join(reasoning), model_extra={})
+    return SimpleNamespace(choices=[SimpleNamespace(message=message, finish_reason=finish_reason)], usage=None)
+
+
 def _describe_empty_reply(response: object) -> str:
     """One line of metadata about a model reply whose content came back
     empty -- sizes and codes only, never the text itself.
@@ -762,7 +790,8 @@ restate it at a higher severity than shown here.
             if model == config.QA_FALLBACK_MODEL and config.QA_FALLBACK_RESPONSE_FORMAT
             else openai.omit
         )
-        response = client.chat.completions.create(
+        response = _chat_completion(
+            client,
             model=model,
             messages=[
                 {"role": "system", "content": _defang_template_tokens(_get_review_prompt(
@@ -926,7 +955,8 @@ def generate_tests(
         return {"think": False}
 
     try:
-        response, _, _ = _call_with_fallback(lambda client, model: client.chat.completions.create(
+        response, _, _ = _call_with_fallback(lambda client, model: _chat_completion(
+            client,
             model=model,
             messages=[
                 {"role": "system", "content": _defang_template_tokens(_get_test_prompt(language))},
