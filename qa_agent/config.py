@@ -88,6 +88,29 @@ AI_RETRY_BASE_DELAY = float(os.getenv("QA_AI_RETRY_BASE_DELAY", "5.0"))  # secon
 # unified 3-attempt/429-only retry budget had no chance of ever covering.
 AI_FALLBACK_RETRY_MAX_ATTEMPTS = max(1, int(os.getenv("QA_AI_FALLBACK_RETRY_MAX_ATTEMPTS", "24")))
 
+
+# Opt-in knobs for the openai client itself, UNSET by default (unset = the SDK's own defaults: 2 automatic retries on
+# 5xx/timeouts and a 600 s read timeout, i.e. behaviour is unchanged for every consumer that does not set them). Found
+# 2026-10-18 on maya-infra's CI against the shared Z13: the SDK's silent retries stack with _call_with_retry's own
+# loop, so one failing call became up to 3 x 3 requests, and a timed-out call held the GPU for 3 x 10 min. A consumer
+# that wants a single retry layer sets QA_AI_CLIENT_MAX_RETRIES=0 and QA_AI_RETRY_MAX_ATTEMPTS to what it wants; a
+# timeout should exceed the queue wait plus a full-length generation on its model, not undercut it.
+def _optional_number(name: str, cast, minimum):
+    """The env var as `cast(value)`, or None when unset/blank/invalid/below `minimum` (never raises: a typo must not
+    take the whole QA run down; it just leaves the SDK default in force)."""
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return None
+    try:
+        value = cast(raw)
+    except ValueError:
+        return None
+    return value if value >= minimum else None
+
+
+AI_CLIENT_MAX_RETRIES = _optional_number("QA_AI_CLIENT_MAX_RETRIES", int, 0)
+AI_REQUEST_TIMEOUT_SEC = _optional_number("QA_AI_REQUEST_TIMEOUT_SEC", float, 1.0)
+
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 CEREBRAS_API_KEY = os.getenv("CEREBRAS_API_KEY", "")
 MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY", "")

@@ -9,6 +9,13 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **Opt-in `QA_AI_CLIENT_MAX_RETRIES` and `QA_AI_REQUEST_TIMEOUT_SEC` (unset by default = no behaviour change)** — found 2026-10-18 on `timefrugal/maya-infra`'s CI against the shared Z13 (maya-infra#239): the openai client silently retries 5xx and timeouts (2 retries, 600 s read timeout by default) on top of `_call_with_retry`'s own loop, so one failing call became up to 3 x 3 requests, and a timed-out call held the Z13 model for 3 x 10 min (the "30 min Request timed out" reviews). The consumer's gateway logs showed seven back-to-back 500s, each 2.3-2.8 min, matching one QA job.
+
+  Fix: both are read in `config.py` (blank, non-numeric or out-of-range values are ignored, never fatal) and passed to the `OpenAI(...)` constructor in `_call_with_fallback` ONLY when set, so the default construction is exactly what it was. A consumer wanting one retry layer sets `QA_AI_CLIENT_MAX_RETRIES=0` and chooses `QA_AI_RETRY_MAX_ATTEMPTS` / `QA_AI_REQUEST_TIMEOUT_SEC` itself; the timeout should exceed the queue wait plus a full-length generation on its model.
+
+  Tests: `tests/test_config.py::TestOptInClientKnobs` (unset / values incl. zero retries / garbage ignored) and `tests/test_ai_review.py::TestClientKnobsPassedOnlyWhenOptedIn`.
+
 ### Fixed (this entry)
 - **`QA_FALLBACK_MODEL`'s own transient 503s were never retried, and a large report could fail to post at all** — found live 2026-09-07 on `timefrugal/Mika`'s CI, deliberately forcing a real end-to-end test of Z13 (an Ollama-backed `QA_FALLBACK_MODEL` provider) as the 4th fallback slot after Groq/Cerebras/Mistral. Two independent real bugs surfaced:
 

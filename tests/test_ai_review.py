@@ -1256,5 +1256,39 @@ class TestCallWithRetry(unittest.TestCase):
         self.assertEqual(fn.call_count, 5)  # AI_FALLBACK_RETRY_MAX_ATTEMPTS
 
 
+class TestClientKnobsPassedOnlyWhenOptedIn(unittest.TestCase):
+    """config.AI_CLIENT_MAX_RETRIES / AI_REQUEST_TIMEOUT_SEC reach the OpenAI constructor only when set, so the default
+    construction (and every existing fake client factory) is byte-for-byte what it was before."""
+
+    PROVIDER = {"name": "fallback", "base_url": "http://x/v1", "api_key": "k", "model": "m"}
+
+    def _construct(self, max_retries, timeout):
+        seen = []
+
+        def fake_openai(**kwargs):
+            seen.append(kwargs)
+            return object()
+
+        with mock.patch.object(ai_review, "OpenAI", fake_openai), \
+             mock.patch.object(ai_review, "_configured_providers", return_value=[self.PROVIDER]), \
+             mock.patch.object(config, "AI_CLIENT_MAX_RETRIES", max_retries), \
+             mock.patch.object(config, "AI_REQUEST_TIMEOUT_SEC", timeout):
+            ai_review._call_with_fallback(lambda client, model: "ok")
+        return seen[0]
+
+    def test_unset_passes_only_base_url_and_api_key(self):
+        self.assertEqual(self._construct(None, None), {"base_url": "http://x/v1", "api_key": "k"})
+
+    def test_set_values_are_passed_through_including_zero_retries(self):
+        kwargs = self._construct(0, 900.0)
+        self.assertEqual((kwargs["max_retries"], kwargs["timeout"]), (0, 900.0))
+
+    def test_each_knob_is_independent(self):
+        self.assertEqual(self._construct(0, None).get("max_retries"), 0)
+        self.assertNotIn("timeout", self._construct(0, None))
+        self.assertEqual(self._construct(None, 300.0).get("timeout"), 300.0)
+        self.assertNotIn("max_retries", self._construct(None, 300.0))
+
+
 if __name__ == "__main__":
     unittest.main()
