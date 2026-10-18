@@ -227,5 +227,31 @@ class TestGeminiProvider(unittest.TestCase):
         self.assertIn("gemini", configured_names)
 
 
+class TestOptInClientKnobs(unittest.TestCase):
+    """QA_AI_CLIENT_MAX_RETRIES / QA_AI_REQUEST_TIMEOUT_SEC: unset by default so every existing consumer keeps the openai
+    SDK's own behaviour (2 retries, 600 s read timeout); a bad value is ignored, never fatal."""
+
+    def tearDown(self):
+        # leave the module in its normal environment-derived state for the other tests
+        with mock.patch.dict(os.environ, {"QA_AI_CLIENT_MAX_RETRIES": "", "QA_AI_REQUEST_TIMEOUT_SEC": ""}):
+            importlib.reload(config_module)
+
+    def test_unset_means_the_sdk_defaults_stay_in_force(self):
+        cfg = _reload_config_with_env({"QA_AI_CLIENT_MAX_RETRIES": "", "QA_AI_REQUEST_TIMEOUT_SEC": ""})
+        self.assertIsNone(cfg.AI_CLIENT_MAX_RETRIES)
+        self.assertIsNone(cfg.AI_REQUEST_TIMEOUT_SEC)
+
+    def test_values_are_read_including_zero_retries(self):
+        cfg = _reload_config_with_env({"QA_AI_CLIENT_MAX_RETRIES": "0", "QA_AI_REQUEST_TIMEOUT_SEC": "900"})
+        self.assertEqual(cfg.AI_CLIENT_MAX_RETRIES, 0)
+        self.assertEqual(cfg.AI_REQUEST_TIMEOUT_SEC, 900.0)
+
+    def test_blank_garbage_and_out_of_range_values_are_ignored_not_fatal(self):
+        for retries, timeout in (("  ", "abc"), ("-1", "0"), ("two", "-5"), ("1.5", "nan")):
+            cfg = _reload_config_with_env({"QA_AI_CLIENT_MAX_RETRIES": retries, "QA_AI_REQUEST_TIMEOUT_SEC": timeout})
+            self.assertIsNone(cfg.AI_CLIENT_MAX_RETRIES, retries)
+            self.assertIsNone(cfg.AI_REQUEST_TIMEOUT_SEC, timeout)
+
+
 if __name__ == "__main__":
     unittest.main()

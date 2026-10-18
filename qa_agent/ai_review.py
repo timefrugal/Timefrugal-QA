@@ -611,7 +611,14 @@ def _call_with_fallback(make_request: Callable[[OpenAI, str], _T]) -> tuple[_T, 
         )
     last_error: Optional[Exception] = None
     for i, provider in enumerate(providers):
-        client = OpenAI(base_url=provider["base_url"], api_key=provider["api_key"])
+        # Passed only when a consumer opted in (config.AI_CLIENT_MAX_RETRIES / AI_REQUEST_TIMEOUT_SEC); otherwise the
+        # constructor call is exactly what it always was, SDK defaults included.
+        client_kwargs = {}
+        if config.AI_CLIENT_MAX_RETRIES is not None:
+            client_kwargs["max_retries"] = config.AI_CLIENT_MAX_RETRIES
+        if config.AI_REQUEST_TIMEOUT_SEC is not None:
+            client_kwargs["timeout"] = config.AI_REQUEST_TIMEOUT_SEC
+        client = OpenAI(base_url=provider["base_url"], api_key=provider["api_key"], **client_kwargs)
         try:
             result = _call_with_retry(lambda: make_request(client, provider["model"]))
             return result, provider["name"], provider["model"]
