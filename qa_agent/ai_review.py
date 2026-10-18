@@ -463,6 +463,42 @@ def _call_with_fallback(make_request: Callable[[OpenAI, str], _T]) -> tuple[_T, 
     raise last_error
 
 
+def _describe_empty_reply(response: object) -> str:
+    """One line of metadata about a model reply whose content came back
+    empty -- sizes and codes only, never the text itself.
+
+    Added after a live Z13 failure (maya-infra#239) where a review request
+    returned "empty AI response content" and nothing on either side could say
+    why: the server had generated 1358 tokens and stopped by itself (not the
+    token cap), but the client only recorded that the content was empty. The
+    open question -- did the model spend its tokens on reasoning and leave the
+    answer field empty, or was nothing written -- is answered by the reasoning
+    field's size plus finish_reason. Every access is defensive: this runs only
+    on an already-failing path and must never raise a new error of its own.
+    """
+    try:
+        choice = response.choices[0]  # type: ignore[attr-defined]
+        message = choice.message
+        extra = getattr(message, "model_extra", None) or {}
+        reasoning = (
+            getattr(message, "reasoning", None)
+            or getattr(message, "reasoning_content", None)
+            or extra.get("reasoning")
+            or extra.get("reasoning_content")
+            or ""
+        )
+        usage = getattr(response, "usage", None)
+        return (
+            f"finish_reason={getattr(choice, 'finish_reason', None)} "
+            f"content_len={len(message.content or '')} "
+            f"reasoning_len={len(reasoning) if isinstance(reasoning, str) else 'n/a'} "
+            f"completion_tokens={getattr(usage, 'completion_tokens', None)} "
+            f"max_tokens={config.AI_MAX_TOKENS}"
+        )
+    except Exception as exc:  # pylint: disable=broad-except
+        return f"(could not describe the empty reply: {type(exc).__name__})"
+
+
 def _parse_review_json(raw: Optional[str]) -> dict:
     """Parse a provider's raw completion content as the review JSON schema
     (stripping a markdown fence if the model wrapped its JSON in one).
@@ -682,6 +718,9 @@ restate it at a higher severity than shown here.
         # itself treats empty/whitespace-only content as a failure, not a
         # clean empty review; substituting "{}" before calling it would
         # silently defeat that.
+        if not (response.choices[0].message.content or "").strip():
+            print(f"[agent] empty AI reply from {model}: {_describe_empty_reply(response)}",
+                  file=sys.stderr)
         return _parse_review_json(response.choices[0].message.content)
 
     try:
