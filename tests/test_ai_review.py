@@ -1407,3 +1407,73 @@ class TestChatTemplateTokensAreDefangedInThePromptOnly(unittest.TestCase):
         self.assertIn("MARK", joined)
         self.assertNotIn("​", review.summary)
         self.assertIn("<tool_call>", review.summary)
+
+
+class TestReviewJsonSalvagedFromReasoningField(unittest.TestCase):
+    """qwen3.8:27b over Ollama finished under the cap with ~19k chars in the
+    reasoning field and an empty content field (maya-infra#239). The salvage
+    must recover a real review object and must never turn prose into a verdict."""
+
+    GOOD = '{"summary": "ok", "architecture_notes": "", "findings": []}'
+
+    def test_picks_the_last_review_shaped_object_among_prose_and_drafts(self):
+        text = ('Let me think {about braces}. Draft: {"summary": "draft", "findings": [1]} then '
+                'final: ' + self.GOOD + ' done.')
+        out = json.loads(ai_review._salvage_review_json(text))
+        self.assertEqual(out["summary"], "ok")
+
+    def test_rejects_anything_not_review_shaped(self):
+        for text in ["", "no braces at all", "{broken", '{"summary": "x"}',
+                     '{"summary": "x", "findings": "not a list"}',
+                     '{"summary": 3, "findings": []}',
+                     "{" * 500, "{" * 500 + "}" * 500]:
+            self.assertIsNone(ai_review._salvage_review_json(text), text[:30])
+
+    def _run(self, content, reasoning):
+        class _Msg:
+            model_extra = {"reasoning": reasoning}
+        _Msg.content = content
+
+        class _Choice:
+            message = _Msg()
+            finish_reason = None
+
+        class _Resp:
+            choices = [_Choice()]
+
+        class _Completions:
+            def create(self, **kwargs):
+                return _Resp()
+
+        class _Client:
+            class chat:
+                completions = _Completions()
+
+        def fake_call_with_fallback(make_request):
+            return make_request(_Client(), "m"), "p", "m"
+
+        import io
+        from contextlib import redirect_stderr
+        err = io.StringIO()
+        with mock.patch.object(ai_review, "_call_with_fallback", fake_call_with_fallback), redirect_stderr(err):
+            review = ai_review.review_code({"app.py": "print('hi')"}, AnalysisResults(),
+                                           repo_name="r", language="python")
+        return review, err.getvalue()
+
+    def test_empty_content_with_json_in_reasoning_is_recovered_and_flagged(self):
+        review, err = self._run("", "thinking... " + self.GOOD)
+        self.assertEqual(review.summary, "ok")
+        self.assertFalse(review.errors)
+        self.assertIn("reasoning_has_review_json=True", err)
+        self.assertIn("recovered from the reasoning field", err)
+
+    def test_empty_content_with_only_prose_reasoning_still_fails_as_before(self):
+        review, err = self._run("", "just thinking out loud, no answer")
+        self.assertTrue(any("valid JSON" in e for e in review.errors))
+        self.assertIn("reasoning_has_review_json=False", err)
+        self.assertNotIn("recovered", err)
+
+    def test_real_content_is_never_replaced_by_reasoning(self):
+        review, _ = self._run('{"summary": "from content", "architecture_notes": "", "findings": []}',
+                              self.GOOD)
+        self.assertEqual(review.summary, "from content")
