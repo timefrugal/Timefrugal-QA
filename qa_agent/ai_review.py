@@ -651,11 +651,11 @@ _TEMPLATE_TOKEN_RE = re.compile(
 _ZWSP = "\u200b"
 
 
-def _defang_template_tokens(text: str) -> str:
-    return _TEMPLATE_TOKEN_RE.sub("<" + _ZWSP, text) if text else text
+def _defang_template_tokens(text: Optional[str]) -> str:
+    return _TEMPLATE_TOKEN_RE.sub("<" + _ZWSP, text) if text else ""
 
 
-def _restore_defanged(text: str) -> str:
+def _restore_defanged(text: Optional[str]) -> Optional[str]:
     return text.replace(_ZWSP, "") if text else text
 
 
@@ -1064,7 +1064,7 @@ def generate_tests(
             temperature=0.1,
             extra_body=_extra_body(model),
         ))
-        test_code = _restore_defanged(response.choices[0].message.content or "")
+        test_code = _restore_defanged(response.choices[0].message.content) or ""
         # Strip markdown fences if present
         test_code = test_code.strip()
         if test_code.startswith("```"):
