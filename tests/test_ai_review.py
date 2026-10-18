@@ -1567,3 +1567,63 @@ class TestClientKnobsPassedOnlyWhenOptedIn(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestEmptyReplyIsDescribedWithoutLeakingText(unittest.TestCase):
+    """An empty review reply must log finish_reason, content/reasoning sizes
+    and token counts (maya-infra#239) -- sizes only, never the reasoning text --
+    and describing it must never raise on odd response shapes."""
+
+    @staticmethod
+    def _response(content, reasoning=None, finish="stop", completion_tokens=1358):
+        class _Msg:
+            model_extra = {"reasoning": reasoning} if reasoning is not None else {}
+        _Msg.content = content
+
+        class _Choice:
+            message = _Msg()
+            finish_reason = finish
+
+        class _Usage:
+            pass
+        _Usage.completion_tokens = completion_tokens
+
+        class _Resp:
+            choices = [_Choice()]
+            usage = _Usage()
+        return _Resp()
+
+    def test_describes_sizes_and_codes_only(self):
+        secret = "PRIVATE-REASONING-TEXT"
+        line = ai_review._describe_empty_reply(self._response("", reasoning=secret * 10))
+        self.assertIn("finish_reason=stop", line)
+        self.assertIn("content_len=0", line)
+        self.assertIn(f"reasoning_len={len(secret) * 10}", line)
+        self.assertIn("completion_tokens=1358", line)
+        self.assertNotIn(secret, line)
+
+    def test_never_raises_on_an_odd_shape(self):
+        self.assertIn("could not describe", ai_review._describe_empty_reply(object()))
+
+    def test_review_code_logs_the_line_on_an_empty_reply_and_still_fails_as_before(self):
+        import io
+        from contextlib import redirect_stderr
+        response = self._response("", reasoning="x" * 40)
+
+        class _Completions:
+            def create(self, **kwargs):
+                return response
+
+        class _Client:
+            class chat:
+                completions = _Completions()
+
+        def fake_call_with_fallback(make_request):
+            return make_request(_Client(), "m"), "p", "m"
+
+        err = io.StringIO()
+        with mock.patch.object(ai_review, "_call_with_fallback", fake_call_with_fallback), redirect_stderr(err):
+            review = ai_review.review_code({"app.py": "print('hi')"}, AnalysisResults(),
+                                           repo_name="r", language="python")
+        self.assertIn("empty AI reply from m: finish_reason=stop content_len=0 reasoning_len=40", err.getvalue())
+        self.assertTrue(any("valid JSON" in e for e in review.errors))
