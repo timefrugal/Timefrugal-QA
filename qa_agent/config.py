@@ -111,6 +111,14 @@ def _optional_number(name: str, cast, minimum):
 AI_CLIENT_MAX_RETRIES = _optional_number("QA_AI_CLIENT_MAX_RETRIES", int, 0)
 AI_REQUEST_TIMEOUT_SEC = _optional_number("QA_AI_REQUEST_TIMEOUT_SEC", float, 1.0)
 
+# Opt-in streaming (default off = exactly today's behaviour). A non-streaming chat call sends no bytes until the whole
+# generation is finished, so a gateway that proxies it with a socket read timeout (the Z13 gateway: 600 s) cuts any
+# request whose queue wait + generation exceeds that -- found 2026-10-18 on maya-infra's CI (maya-infra#239): a reasoning
+# model generating ~5-8k tokens at 10-16 tok/s routinely needs more than 10 minutes, and every such review died with
+# "Connection error" at exactly 600 s. With QA_AI_STREAM=1 the reply is received as a stream and assembled here, so bytes
+# keep flowing and the idle timeout never trips; the result handed to the rest of the code is the same shape.
+AI_STREAM = os.getenv("QA_AI_STREAM", "").strip().lower() in ("1", "true", "yes", "on")
+
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 CEREBRAS_API_KEY = os.getenv("CEREBRAS_API_KEY", "")
 MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY", "")
