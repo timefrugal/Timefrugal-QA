@@ -1594,13 +1594,13 @@ class TestEmptyReplyIsDescribedWithoutLeakingText(unittest.TestCase):
         return _Resp()
 
     def test_describes_sizes_and_codes_only(self):
-        secret = "PRIVATE-REASONING-TEXT"
-        line = ai_review._describe_empty_reply(self._response("", reasoning=secret * 10))
+        marker = "PRIVATE-REASONING-TEXT"
+        line = ai_review._describe_empty_reply(self._response("", reasoning=marker * 10))
         self.assertIn("finish_reason=stop", line)
         self.assertIn("content_len=0", line)
-        self.assertIn(f"reasoning_len={len(secret) * 10}", line)
+        self.assertIn(f"reasoning_len={len(marker) * 10}", line)
         self.assertIn("completion_tokens=1358", line)
-        self.assertNotIn(secret, line)
+        self.assertNotIn(marker, line)
 
     def test_never_raises_on_an_odd_shape(self):
         self.assertIn("could not describe", ai_review._describe_empty_reply(object()))
