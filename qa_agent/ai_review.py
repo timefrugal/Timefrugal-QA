@@ -659,6 +659,54 @@ def _restore_defanged(text: Optional[str]) -> Optional[str]:
     return text.replace(_ZWSP, "") if text else text
 
 
+def _reasoning_text(message: object) -> str:
+    """The model's separate reasoning field, if the server returned one
+    (Ollama: "reasoning"; some servers: "reasoning_content"). Empty string when
+    absent. Never raises."""
+    try:
+        extra = getattr(message, "model_extra", None) or {}
+        value = (
+            getattr(message, "reasoning", None)
+            or getattr(message, "reasoning_content", None)
+            or extra.get("reasoning")
+            or extra.get("reasoning_content")
+            or ""
+        )
+        return value if isinstance(value, str) else ""
+    except Exception:  # pylint: disable=broad-except
+        return ""
+
+
+def _salvage_review_json(reasoning: str) -> Optional[str]:
+    """Pull the review JSON out of a reasoning field when the content field is
+    empty.
+
+    Seen live (maya-infra#239, qwen3.8:27b over Ollama): the review request
+    finished on its own at ~5.4k tokens, under the cap, with ~19k characters in
+    `reasoning` and nothing in `content`. A reasoning model that never closes
+    its thinking block has its whole output filed as reasoning, answer included.
+
+    Deliberately strict, so it can never turn thinking prose into a verdict:
+    only a JSON OBJECT that parses on its own and carries BOTH a string
+    "summary" and a list "findings" counts, and the LAST such object wins (the
+    final answer, not a draft). Returns it re-serialised, or None."""
+    if not reasoning or "{" not in reasoning:
+        return None
+    decoder = json.JSONDecoder()
+    found: Optional[dict] = None
+    pos = reasoning.find("{")
+    while pos != -1:
+        try:
+            obj, end = decoder.raw_decode(reasoning, pos)
+        except ValueError:
+            pos = reasoning.find("{", pos + 1)
+            continue
+        if isinstance(obj, dict) and isinstance(obj.get("summary"), str) and isinstance(obj.get("findings"), list):
+            found = obj
+        pos = reasoning.find("{", max(end, pos + 1))
+    return json.dumps(found) if found is not None else None
+
+
 def _describe_empty_reply(response: object) -> str:
     """One line of metadata about a model reply whose content came back
     empty -- sizes and codes only, never the text itself.
@@ -675,19 +723,13 @@ def _describe_empty_reply(response: object) -> str:
     try:
         choice = response.choices[0]  # type: ignore[attr-defined]
         message = choice.message
-        extra = getattr(message, "model_extra", None) or {}
-        reasoning = (
-            getattr(message, "reasoning", None)
-            or getattr(message, "reasoning_content", None)
-            or extra.get("reasoning")
-            or extra.get("reasoning_content")
-            or ""
-        )
+        reasoning = _reasoning_text(message)
         usage = getattr(response, "usage", None)
         return (
             f"finish_reason={getattr(choice, 'finish_reason', None)} "
             f"content_len={len(message.content or '')} "
-            f"reasoning_len={len(reasoning) if isinstance(reasoning, str) else 'n/a'} "
+            f"reasoning_len={len(reasoning)} "
+            f"reasoning_has_review_json={_salvage_review_json(reasoning) is not None} "
             f"completion_tokens={getattr(usage, 'completion_tokens', None)} "
             f"max_tokens={config.AI_MAX_TOKENS}"
         )
@@ -915,10 +957,15 @@ restate it at a higher severity than shown here.
         # itself treats empty/whitespace-only content as a failure, not a
         # clean empty review; substituting "{}" before calling it would
         # silently defeat that.
-        if not (response.choices[0].message.content or "").strip():
+        content = response.choices[0].message.content
+        if not (content or "").strip():
             print(f"[agent] empty AI reply from {model}: {_describe_empty_reply(response)}",
                   file=sys.stderr)
-        return _parse_review_json(_restore_defanged(response.choices[0].message.content))
+            salvaged = _salvage_review_json(_restore_defanged(_reasoning_text(response.choices[0].message)) or "")
+            if salvaged is not None:
+                print(f"[agent] review JSON recovered from the reasoning field of {model}", file=sys.stderr)
+                content = salvaged
+        return _parse_review_json(_restore_defanged(content))
 
     try:
         data, review.provider, review.provider_model = _call_with_fallback(_make_request)

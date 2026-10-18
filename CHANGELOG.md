@@ -10,6 +10,11 @@ Versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- **A review whose answer was filed in the model's `reasoning` field is no longer thrown away, and the empty-reply log line says whether that happened** — found 2026-10-18 on `timefrugal/maya-infra`'s CI (maya-infra#239). With the new empty-reply log (#41) a failing qwen3.8:27b review read `finish_reason=None content_len=0 reasoning_len=18854 completion_tokens=0 max_tokens=8000`, and the server side showed ~5.4k tokens generated, a natural stop under the cap: the model wrote ~19k characters into `reasoning` and nothing into `content` (a reasoning model that never closes its thinking block has everything filed as reasoning).
+
+  Fix: when `content` is empty, `review_code` looks in the reasoning field for a JSON object and uses it ONLY if it parses on its own and has a string `summary` and a list `findings` (the last such object wins). Anything else fails exactly as before. A real `content` is never replaced. The log line gained `reasoning_has_review_json=True|False` (still sizes/flags only, never the text) and a `review JSON recovered from the reasoning field` line when the salvage is used. Tests: `TestReviewJsonSalvagedFromReasoningField` (mutation-checked).
+
+### Fixed
 - **Chat-template / tool-call control strings in a reviewed diff are defanged before the prompt is sent (and restored in the reply)** — found 2026-10-18 on `timefrugal/maya-infra`'s CI against the shared Z13 (maya-infra#239): a PR whose diff quotes `<tool_call>`, `<function=` and `<|python_tag|>` (a guard that detects them) failed its AI review with HTTP 500 `EOF` on every run (five in a row), while diffs without them passed on the same model. The server log said "qwen tool call parsing failed" on requests that sent no tools: when the model echoes such a string back, Ollama's output parser treats it as a tool call and errors the whole request.
 
   Fix: a zero-width space is inserted after the `<` of `<tool_call`, `</tool_call`, `<tool_response`, `<function`, `<think`, `</think` and any `<|` in the system and user messages of both the review and test-generation requests, and removed again from what the model returns. Ordinary angle brackets are untouched. Tests: `TestChatTemplateTokensAreDefangedInThePromptOnly` (mutation-checked).
