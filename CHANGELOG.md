@@ -9,6 +9,11 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **Opt-in `QA_AI_STREAM=1`: receive the AI reply as a stream (default off = unchanged)** — found 2026-10-18 on `timefrugal/maya-infra`'s CI (maya-infra#239). The Z13 gateway proxies a non-streaming call with a 600 s socket read timeout, and a non-streaming call sends nothing until the whole generation is done, so any review whose queue wait plus generation exceeds 10 minutes dies with "Connection error" at exactly 600 s (a reasoning model at 10-16 tok/s generating 5-8k tokens does). Read by Ollama-side logs: both requests of a review were cut at 10m0s and cancelled mid-generation.
+
+  Fix: with the flag set, `review_code` and `generate_tests` iterate the stream and assemble content, reasoning and finish_reason into the shape the rest of the code already reads, so bytes keep flowing and the idle timeout never trips. Without it the plain call is returned untouched. Tests: `TestOptInStreaming` (mutation-checked).
+
 ### Fixed
 - **A review whose answer was filed in the model's `reasoning` field is no longer thrown away, and the empty-reply log line says whether that happened** — found 2026-10-18 on `timefrugal/maya-infra`'s CI (maya-infra#239). With the new empty-reply log (#41) a failing qwen3.8:27b review read `finish_reason=None content_len=0 reasoning_len=18854 completion_tokens=0 max_tokens=8000`, and the server side showed ~5.4k tokens generated, a natural stop under the cap: the model wrote ~19k characters into `reasoning` and nothing into `content` (a reasoning model that never closes its thinking block has everything filed as reasoning).
 
