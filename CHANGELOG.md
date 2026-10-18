@@ -9,6 +9,11 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **Chat-template / tool-call control strings in a reviewed diff are defanged before the prompt is sent (and restored in the reply)** — found 2026-10-18 on `timefrugal/maya-infra`'s CI against the shared Z13 (maya-infra#239): a PR whose diff quotes `<tool_call>`, `<function=` and `<|python_tag|>` (a guard that detects them) failed its AI review with HTTP 500 `EOF` on every run (five in a row), while diffs without them passed on the same model. The server log said "qwen tool call parsing failed" on requests that sent no tools: when the model echoes such a string back, Ollama's output parser treats it as a tool call and errors the whole request.
+
+  Fix: a zero-width space is inserted after the `<` of `<tool_call`, `</tool_call`, `<tool_response`, `<function`, `<think`, `</think` and any `<|` in the system and user messages of both the review and test-generation requests, and removed again from what the model returns. Ordinary angle brackets are untouched. Tests: `TestChatTemplateTokensAreDefangedInThePromptOnly` (mutation-checked).
+
 ### Added
 - **An empty AI review reply now logs why (finish_reason, content/reasoning sizes, completion tokens, max_tokens) — sizes only, never the text** — found 2026-10-18 on `timefrugal/maya-infra`'s CI against the shared Z13 (maya-infra#239): a one-line diff returned "empty AI response content" after ~8 min. The server side showed 1358 tokens generated and a natural stop (not the 8000 cap), so the cause (reasoning with no answer vs. something dropped) could not be told apart from either side. `review_code` now prints one `[agent] empty AI reply from <model>: ...` line before the parse failure; behaviour is otherwise unchanged and the describing helper cannot raise. Tests: `TestEmptyReplyIsDescribedWithoutLeakingText`.
 

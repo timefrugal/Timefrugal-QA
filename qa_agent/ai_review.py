@@ -10,6 +10,7 @@ key) is skipped in favor of the next one, so a single provider running out
 the original backend, was fully retired by GitHub on 2026-07-30.)
 """
 import json
+import re
 import sys
 import time
 from dataclasses import dataclass, field
@@ -463,6 +464,27 @@ def _call_with_fallback(make_request: Callable[[OpenAI, str], _T]) -> tuple[_T, 
     raise last_error
 
 
+# Chat-template / tool-call control strings. A diff that QUOTES one of these (a
+# parser, a guard, a test of one) can make the reviewing model echo it back, and
+# on some servers (found on Ollama + qwen3.8:27b, maya-infra#239) the server's
+# own output parser then fails the whole request with HTTP 500 "EOF" -- the
+# same diff failed five runs in a row while harmless diffs passed.
+# A zero-width space after the "<" keeps the text readable to the model but is
+# no longer the control string, so neither the prompt nor an echo of it trips
+# the parser. Removed again from whatever the model returns.
+_TEMPLATE_TOKEN_RE = re.compile(
+    r"<(?=/?(?:tool_call|tool_response|tool_calls|function|think|thinking)\b|\|)", re.IGNORECASE)
+_ZWSP = "\u200b"
+
+
+def _defang_template_tokens(text: Optional[str]) -> str:
+    return _TEMPLATE_TOKEN_RE.sub("<" + _ZWSP, text) if text else ""
+
+
+def _restore_defanged(text: Optional[str]) -> Optional[str]:
+    return text.replace(_ZWSP, "") if text else text
+
+
 def _describe_empty_reply(response: object) -> str:
     """One line of metadata about a model reply whose content came back
     empty -- sizes and codes only, never the text itself.
@@ -701,10 +723,10 @@ restate it at a higher severity than shown here.
         response = client.chat.completions.create(
             model=model,
             messages=[
-                {"role": "system", "content": _get_review_prompt(
+                {"role": "system", "content": _defang_template_tokens(_get_review_prompt(
                     language, repo_config.extra_instructions if repo_config else ""
-                )},
-                {"role": "user", "content": user_msg},
+                ))},
+                {"role": "user", "content": _defang_template_tokens(user_msg)},
             ],
             max_tokens=config.AI_MAX_TOKENS,
             temperature=0.1,
@@ -721,7 +743,7 @@ restate it at a higher severity than shown here.
         if not (response.choices[0].message.content or "").strip():
             print(f"[agent] empty AI reply from {model}: {_describe_empty_reply(response)}",
                   file=sys.stderr)
-        return _parse_review_json(response.choices[0].message.content)
+        return _parse_review_json(_restore_defanged(response.choices[0].message.content))
 
     try:
         data, review.provider, review.provider_model = _call_with_fallback(_make_request)
@@ -860,14 +882,14 @@ def generate_tests(
         response, _, _ = _call_with_fallback(lambda client, model: client.chat.completions.create(
             model=model,
             messages=[
-                {"role": "system", "content": _get_test_prompt(language)},
-                {"role": "user", "content": user_msg},
+                {"role": "system", "content": _defang_template_tokens(_get_test_prompt(language))},
+                {"role": "user", "content": _defang_template_tokens(user_msg)},
             ],
             max_tokens=config.AI_MAX_TOKENS,
             temperature=0.1,
             extra_body=_extra_body(model),
         ))
-        test_code = response.choices[0].message.content or ""
+        test_code = _restore_defanged(response.choices[0].message.content) or ""
         # Strip markdown fences if present
         test_code = test_code.strip()
         if test_code.startswith("```"):
