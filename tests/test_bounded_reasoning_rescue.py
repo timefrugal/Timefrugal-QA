@@ -10,19 +10,20 @@ from contextlib import redirect_stderr
 from unittest import mock
 
 from qa_agent import ai_review, config
+from qa_agent.repo_config import RepoConfig
 from qa_agent.static_analysis import AnalysisResults
 
 GOOD = json.dumps({"summary": "Looks fine.", "architecture_notes": "", "findings": []})
 
 
-def _resp(content, reasoning=""):
+def _resp(content, reasoning="", finish="length"):
     class _Msg:
         model_extra = {"reasoning": reasoning} if reasoning else {}
     _Msg.content = content
 
     class _Choice:
         message = _Msg()
-        finish_reason = "length"
+        finish_reason = finish
 
     class _Resp:
         choices = [_Choice()]
@@ -48,7 +49,7 @@ class _Script:
         self.chat = _Chat()
 
 
-def _review(script, model="fb-model", effort="none", fallback_model="fb-model"):
+def _review(script, model="fb-model", effort="none", fallback_model="fb-model", errors_block=False):
     def fake_call_with_fallback(make_request):
         return make_request(script, model), "fallback", model
 
@@ -60,7 +61,8 @@ def _review(script, model="fb-model", effort="none", fallback_model="fb-model"):
          mock.patch.object(config, "AI_MAX_TOKENS", 8000), \
          mock.patch.object(config, "AI_STREAM", False), \
          redirect_stderr(err):
-        review = ai_review.review_code({"app.py": "print('hi')"}, AnalysisResults(), repo_name="r", language="python")
+        review = ai_review.review_code({"app.py": "print('hi')"}, AnalysisResults(), repo_name="r", language="python",
+                                       repo_config=RepoConfig(ai_errors_block=errors_block))
     return review, err.getvalue()
 
 
@@ -107,7 +109,7 @@ class TestRescue(unittest.TestCase):
         self.assertIn("rescue attempt also empty", log)
 
     def test_json_salvaged_from_the_first_reply_reasoning_skips_the_rescue(self):
-        script = _Script([_resp("", reasoning="analysis... " + GOOD)])
+        script = _Script([_resp("", reasoning="analysis... " + GOOD, finish="stop")])
         review, _ = _review(script)
         self.assertEqual(len(script.calls), 1)
         self.assertEqual(review.errors, [])

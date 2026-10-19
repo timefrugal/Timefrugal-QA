@@ -2,6 +2,7 @@
 Timefrugal-QA Agent Configuration
 """
 import os
+import sys
 
 # ──────────────────────────────────────────────
 # AI backend — a chain of free-tier providers, tried in order
@@ -208,8 +209,39 @@ QA_FALLBACK_REASONING_EFFORT = os.getenv("QA_FALLBACK_REASONING_EFFORT", "").str
 # can repeat). The rescued reply must carry a summary and a findings list; the review is labelled "reduced-depth" in
 # its summary and in the commit status. Empty (off) by default -- no behaviour change unless a repo opts in. A blank
 # or invalid QA_AI_RESCUE_MAX_TOKENS falls back to 2500 rather than crashing the run.
-AI_RESCUE_REASONING_EFFORT = os.getenv("QA_AI_RESCUE_REASONING_EFFORT", "").strip()
-AI_RESCUE_MAX_TOKENS = _optional_number("QA_AI_RESCUE_MAX_TOKENS", int, 1) or 2500
+_RESCUE_EFFORTS = ("none", "low", "medium", "high")
+_RESCUE_MAX_TOKENS_CEILING = 8000     # the rescue is meant to be SHORT; a huge value would remove the bound
+
+
+def _rescue_effort() -> str:
+    """QA_AI_RESCUE_REASONING_EFFORT normalised: case-insensitive; off-words ("false", "off", "0", "no", blank) mean OFF;
+    anything that is not one of none/low/medium/high is ignored WITH a warning (a typo must neither enable the rescue
+    nor send an unknown effort string to the gateway)."""
+    raw = os.getenv("QA_AI_RESCUE_REASONING_EFFORT", "").strip().lower()
+    if raw in ("", "false", "off", "0", "no"):
+        return ""
+    if raw in _RESCUE_EFFORTS:
+        return raw
+    print(f"[config] QA_AI_RESCUE_REASONING_EFFORT={raw!r} is not one of {_RESCUE_EFFORTS} -- rescue stays OFF",
+          file=sys.stderr)
+    return ""
+
+
+def _rescue_max_tokens() -> int:
+    """QA_AI_RESCUE_MAX_TOKENS: default 2500; blank/invalid/<1 falls back to 2500 with a warning; capped at the ceiling."""
+    raw = os.getenv("QA_AI_RESCUE_MAX_TOKENS", "").strip()
+    value = _optional_number("QA_AI_RESCUE_MAX_TOKENS", int, 1)
+    if raw and value is None:
+        print(f"[config] QA_AI_RESCUE_MAX_TOKENS={raw!r} is not a positive integer -- using 2500", file=sys.stderr)
+    value = value or 2500
+    if value > _RESCUE_MAX_TOKENS_CEILING:
+        print(f"[config] QA_AI_RESCUE_MAX_TOKENS={value} capped at {_RESCUE_MAX_TOKENS_CEILING}", file=sys.stderr)
+        value = _RESCUE_MAX_TOKENS_CEILING
+    return value
+
+
+AI_RESCUE_REASONING_EFFORT = _rescue_effort()
+AI_RESCUE_MAX_TOKENS = _rescue_max_tokens()
 
 # Provider chain, tried in this order by ai_review._call_with_fallback. A
 # provider whose API key env var isn't set is skipped, not an error --

@@ -872,16 +872,31 @@ restate it at a higher severity than shown here.
         # clean empty review; substituting "{}" before calling it would
         # silently defeat that.
         content = response.choices[0].message.content
+        rescue_on = bool(config.AI_RESCUE_REASONING_EFFORT) and model == config.QA_FALLBACK_MODEL
+        finish = getattr(response.choices[0], "finish_reason", None)
+        draft = None     # a review object found in the reasoning of a reply CUT OFF at the limit: only a last resort
         if not (content or "").strip():
             print(f"[agent] empty AI reply from {model}: {_describe_empty_reply(response)}",
                   file=sys.stderr)
             salvaged = _salvage_review_json(_restore_defanged(_reasoning_text(response.choices[0].message)) or "")
             if salvaged is not None:
-                print(f"[agent] review JSON recovered from the reasoning field of {model}", file=sys.stderr)
-                content = salvaged
+                if finish == "length" and rescue_on:
+                    # The thinking was cut off, so this object is a DRAFT the model may have been about to revise
+                    # ("... wait, line 12 is a SQL injection"). Prefer the rescue; use the draft only if it fails.
+                    draft = salvaged
+                else:
+                    print(f"[agent] review JSON recovered from the reasoning field of {model}", file=sys.stderr)
+                    content = salvaged
+        elif finish == "length" and rescue_on:
+            # A complete review wrapped in prose and cut off right after it is still a complete review: use it.
+            try:
+                _parse_review_json(_restore_defanged(content))
+            except ValueError:
+                inner = _salvage_review_json(_restore_defanged(content))
+                if inner is not None:
+                    content = inner
         used_rescue = False
-        if (_needs_rescue(content, response) and model == config.QA_FALLBACK_MODEL
-                and config.AI_RESCUE_REASONING_EFFORT):
+        if (_needs_rescue(content, response) and rescue_on):
             # The thinking used the whole budget (empty reply, or an answer cut off mid-JSON at finish_reason=length)
             # and there was nothing to salvage. Ask once more with reasoning limited, so the review ends with an
             # answer after a bounded amount of thinking (see config.py).
@@ -901,13 +916,17 @@ restate it at a higher severity than shown here.
                 print(f"[agent] rescue attempt also empty: "
                       f"{_describe_empty_reply(rescue, max_tokens=config.AI_RESCUE_MAX_TOKENS)}", file=sys.stderr)
                 content = _salvage_review_json(_restore_defanged(_reasoning_text(rescue.choices[0].message)) or "")
+            if not (content or "").strip() and draft is not None:
+                print(f"[agent] using the draft review from the cut-off reasoning of {model}", file=sys.stderr)
+                content = draft
             used_rescue = bool((content or "").strip())
         data = _parse_review_json(_restore_defanged(content))
         if used_rescue:
             # A no-thinking model under constrained decoding readily emits a bare "{}" or a summary with no findings
             # list; accepting that would turn a rescued reply into a false clean pass. Require the review's shape.
-            if "summary" not in data or not isinstance(data.get("findings"), list):
-                raise json.JSONDecodeError("rescue reply lacks the review's summary/findings", content or "", 0)
+            summary = data.get("summary")
+            if not (isinstance(summary, str) and summary.strip()) or not isinstance(data.get("findings"), list):
+                raise json.JSONDecodeError("rescue reply lacks a non-empty summary and a findings list", content or "", 0)
             data["_reduced_depth"] = True
         return data
 
@@ -932,14 +951,18 @@ restate it at a higher severity than shown here.
         review.errors.append(f"AI provider error (all configured providers failed): {e}")
         return review
 
-    review.summary = data.get("summary", "")
+    summary = data.get("summary", "")
+    review.summary = summary if isinstance(summary, str) else ""
     if data.pop("_reduced_depth", False):
         review.reduced_depth = True
-        review.summary = ("(Reduced-depth review: the model's first attempt spent its whole token budget "
-                          "reasoning, so it was re-asked once with reasoning limited.) " + review.summary)
+        review.summary = ("(Reduced-depth review: the model's first attempt ran out of its token budget (reasoning, "
+                          "or an answer cut off at the limit), so it was re-asked once with reasoning limited.) "
+                          + review.summary)
     review.architecture_notes = data.get("architecture_notes", "")
 
     for item in data.get("findings", []):
+        if not isinstance(item, dict):
+            continue      # a model that returns strings/numbers in the list must not crash the run
         finding = AIFinding(
             severity=_validate_severity(item.get("severity", config.SEVERITY_INFO)),
             category=item.get("category", "quality"),
@@ -949,6 +972,12 @@ restate it at a higher severity than shown here.
             suggestion=item.get("suggestion", ""),
         )
         review.findings.append(_demote_if_outside_diff(finding, changed_line_ranges))
+
+    if review.reduced_depth and not review.findings and review.ai_errors_block:
+        # A repo that fails closed on AI trouble (ai.errors_block: true) must not get a clean pass from a shallow,
+        # no-thinking rescue that found nothing: that would turn "the AI review failed" (ERRORED) into "success".
+        review.errors.append("The AI review ran at reduced depth (rescue) and reported nothing; treated as unavailable "
+                             "because ai.errors_block is true")
 
     return review
 

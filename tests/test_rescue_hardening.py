@@ -13,6 +13,7 @@ from unittest import mock
 
 from qa_agent import agent, ai_review, config, pr_reporter
 from qa_agent.ai_review import AIReview
+from qa_agent.repo_config import RepoConfig
 from qa_agent.static_analysis import AnalysisResults
 from tests.test_ai_review import _fake_api_error
 
@@ -44,7 +45,7 @@ class _Client:
         self.chat = SimpleNamespace(completions=_C())
 
 
-def _run(clients_by_provider, providers, fallback_model="m", effort="none", stream=False):
+def _run(clients_by_provider, providers, fallback_model="m", effort="none", stream=False, errors_block=False):
     """review_code through the REAL _call_with_fallback/_call_with_retry with fake OpenAI clients."""
     it = iter(clients_by_provider)
     err = io.StringIO()
@@ -59,7 +60,8 @@ def _run(clients_by_provider, providers, fallback_model="m", effort="none", stre
          mock.patch.object(config, "AI_RETRY_MAX_ATTEMPTS", 3), \
          mock.patch.object(config, "AI_FALLBACK_RETRY_MAX_ATTEMPTS", 5), \
          redirect_stderr(err):
-        review = ai_review.review_code({"app.py": "print('hi')"}, AnalysisResults(), repo_name="r", language="python")
+        review = ai_review.review_code({"app.py": "print('hi')"}, AnalysisResults(), repo_name="r", language="python",
+                                       repo_config=RepoConfig(ai_errors_block=errors_block))
     return review, err.getvalue()
 
 
