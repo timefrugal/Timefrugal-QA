@@ -194,7 +194,8 @@ def _build_comment(
     generated_tests: str,
 ) -> str:
     blocked = static.has_blocking_issues or ai.has_blocking_issues
-    errored = bool(static.errors or ai.errors)
+    errored = bool(static.errors or ai.blocking_errors)
+    ai_unavailable_advisory = bool(ai.errors) and not ai.blocking_errors
     threshold = effective_block_threshold(static, ai.has_blocking_issues)
     status_line = (
         f"## 🔴 Timefrugal-QA — BLOCKED: {blocking_severity_label(threshold)} "
@@ -207,6 +208,8 @@ def _build_comment(
         if blocked
         else "## ⚠️ Timefrugal-QA — ERRORED: analysis tools failed, results incomplete"
         if errored
+        else "## ✅ Timefrugal-QA — Checks passed (AI review unavailable — advisory only, not blocking)"
+        if ai_unavailable_advisory
         else "## ✅ Timefrugal-QA — All checks passed"
     )
 

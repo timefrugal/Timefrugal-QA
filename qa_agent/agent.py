@@ -287,7 +287,7 @@ def run(
 
     # ── 6. Determine overall verdict ──────────────────────────────────
     blocked = static_results.has_blocking_issues or ai_review.has_blocking_issues
-    errored = mode == "ci" and bool(static_results.errors or ai_review.errors)
+    errored = mode == "ci" and bool(static_results.errors or ai_review.blocking_errors)
 
     # ── 7. Report ─────────────────────────────────────────────────────
     if mode == "ci":

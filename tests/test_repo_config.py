@@ -477,5 +477,43 @@ class TestFilterIgnored(unittest.TestCase):
         self.assertEqual([f.rule_id for f in out], ["B101"])
 
 
+class TestAiBlockingScopeAndErrorsBlock(unittest.TestCase):
+    """`ai.blocking: security` (only security-category CRITICAL/HIGH may block) and `ai.errors_block: false`
+    (a failed AI review is a warning, not an ERRORED run)."""
+
+    def _load(self, yaml_text):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with open(os.path.join(tmpdir, ".timefrugal-qa.yml"), "w") as f:
+                f.write(yaml_text)
+            return load_repo_config(tmpdir)
+
+    def test_true_keeps_the_original_all_findings_scope(self):
+        cfg = self._load("ai:\n  blocking: true\n")
+        self.assertTrue(cfg.ai_blocking)
+        self.assertEqual(cfg.ai_blocking_scope, "all")
+
+    def test_security_string_enables_blocking_with_security_scope(self):
+        cfg = self._load("ai:\n  blocking: security\n")
+        self.assertTrue(cfg.ai_blocking)
+        self.assertEqual(cfg.ai_blocking_scope, "security")
+
+    def test_security_is_case_insensitive(self):
+        self.assertEqual(self._load("ai:\n  blocking: Security\n").ai_blocking_scope, "security")
+
+    def test_a_misspelt_scope_never_turns_blocking_on(self):
+        cfg = self._load("ai:\n  blocking: secuirty\n")
+        self.assertFalse(cfg.ai_blocking)
+
+    def test_errors_block_defaults_to_true(self):
+        self.assertTrue(self._load("ai:\n  blocking: true\n").ai_errors_block)
+        self.assertTrue(RepoConfig().ai_errors_block)
+
+    def test_errors_block_false_is_read(self):
+        self.assertFalse(self._load("ai:\n  errors_block: false\n").ai_errors_block)
+
+    def test_a_non_boolean_errors_block_falls_back_to_blocking(self):
+        self.assertTrue(self._load("ai:\n  errors_block: nope\n").ai_errors_block)
+
+
 if __name__ == "__main__":
     unittest.main()
