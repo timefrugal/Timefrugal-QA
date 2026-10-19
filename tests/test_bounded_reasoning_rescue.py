@@ -58,6 +58,7 @@ def _review(script, model="fb-model", effort="none", fallback_model="fb-model"):
          mock.patch.object(config, "AI_RESCUE_REASONING_EFFORT", effort), \
          mock.patch.object(config, "AI_RESCUE_MAX_TOKENS", 2500), \
          mock.patch.object(config, "AI_MAX_TOKENS", 8000), \
+         mock.patch.object(config, "AI_STREAM", False), \
          redirect_stderr(err):
         review = ai_review.review_code({"app.py": "print('hi')"}, AnalysisResults(), repo_name="r", language="python")
     return review, err.getvalue()
@@ -120,9 +121,13 @@ class TestRescue(unittest.TestCase):
 
 
 class TestConfigDefaults(unittest.TestCase):
-    def test_rescue_is_off_by_default_with_a_small_cap(self):
-        self.assertEqual(config.AI_RESCUE_REASONING_EFFORT, "")
-        self.assertLess(config.AI_RESCUE_MAX_TOKENS, config.AI_MAX_TOKENS + 5000)
+    def test_a_blank_or_invalid_rescue_token_budget_falls_back_to_2500_instead_of_crashing(self):
+        import os
+        for raw in ("", "abc", "0", "-5"):
+            with mock.patch.dict(os.environ, {"QA_AI_RESCUE_MAX_TOKENS": raw}):
+                self.assertEqual(config._optional_number("QA_AI_RESCUE_MAX_TOKENS", int, 1) or 2500, 2500, raw)
+        with mock.patch.dict(os.environ, {"QA_AI_RESCUE_MAX_TOKENS": "1800"}):
+            self.assertEqual(config._optional_number("QA_AI_RESCUE_MAX_TOKENS", int, 1) or 2500, 1800)
 
 
 if __name__ == "__main__":

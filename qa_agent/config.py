@@ -201,12 +201,15 @@ QA_FALLBACK_REASONING_EFFORT = os.getenv("QA_FALLBACK_REASONING_EFFORT", "").str
 # thinking and never write the answer (maya-infra#239: reasoning_len=18854, completion_tokens at the cap, content
 # empty -> the run ERRORED). max_tokens is the hard cap on the thinking, but it also caps the answer, so a cap high
 # enough for the answer lets the thinking run long and a low cap starves the answer. When this is set (e.g. "none"),
-# an empty reply that could not be salvaged from the reasoning field is retried ONCE with that reasoning_effort and
-# a small QA_AI_RESCUE_MAX_TOKENS, so every review ends with an answer after a fixed, bounded amount of thinking:
-# at most QA_AI_MAX_TOKENS + QA_AI_RESCUE_MAX_TOKENS tokens. The rescued review is labelled "reduced-depth" in its
-# summary. Empty (off) by default -- no behaviour change unless a repo opts in.
+# an empty reply (or one cut off mid-JSON at finish_reason=length) that could not be salvaged from the reasoning
+# field is retried ONCE with that reasoning_effort and a small QA_AI_RESCUE_MAX_TOKENS, so a review ends with an
+# answer after a bounded amount of thinking: QA_AI_MAX_TOKENS + QA_AI_RESCUE_MAX_TOKENS tokens PER ATTEMPT (the
+# outer 5xx/429 retry loop reuses the first call's response instead of repeating it, so only the small rescue call
+# can repeat). The rescued reply must carry a summary and a findings list; the review is labelled "reduced-depth" in
+# its summary and in the commit status. Empty (off) by default -- no behaviour change unless a repo opts in. A blank
+# or invalid QA_AI_RESCUE_MAX_TOKENS falls back to 2500 rather than crashing the run.
 AI_RESCUE_REASONING_EFFORT = os.getenv("QA_AI_RESCUE_REASONING_EFFORT", "").strip()
-AI_RESCUE_MAX_TOKENS = int(os.getenv("QA_AI_RESCUE_MAX_TOKENS", "2500"))
+AI_RESCUE_MAX_TOKENS = _optional_number("QA_AI_RESCUE_MAX_TOKENS", int, 1) or 2500
 
 # Provider chain, tried in this order by ai_review._call_with_fallback. A
 # provider whose API key env var isn't set is skipped, not an error --

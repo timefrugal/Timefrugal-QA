@@ -1,2 +1,2 @@
 # Timefrugal-QA Agent
-__version__ = "1.3.4.post7"
+__version__ = "1.3.4.post8"

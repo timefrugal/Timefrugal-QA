@@ -75,6 +75,9 @@ class AIReview:
     ai_blocking_scope: str = "all"
     # See RepoConfig.ai_errors_block.
     ai_errors_block: bool = True
+    # True when this review came from the bounded-reasoning rescue (a lighter, no-thinking pass). Reporters say so in
+    # the status line, so a finding-free reduced-depth review is never presented as a full-depth clean pass.
+    reduced_depth: bool = False
     # Which configured provider (config.AI_PROVIDERS entry name -- "groq",
     # "cerebras", "mistral", or "fallback") and model actually answered,
     # set by review_code() from _call_with_fallback's return. Empty when no
@@ -584,7 +587,7 @@ def _chat_completion(client: OpenAI, **kwargs):
     return SimpleNamespace(choices=[SimpleNamespace(message=message, finish_reason=finish_reason)], usage=None)
 
 
-def _describe_empty_reply(response: object) -> str:
+def _describe_empty_reply(response: object, max_tokens: Optional[int] = None) -> str:
     """One line of metadata about a model reply whose content came back
     empty -- sizes and codes only, never the text itself.
 
@@ -608,10 +611,28 @@ def _describe_empty_reply(response: object) -> str:
             f"reasoning_len={len(reasoning)} "
             f"reasoning_has_review_json={_salvage_review_json(reasoning) is not None} "
             f"completion_tokens={getattr(usage, 'completion_tokens', None)} "
-            f"max_tokens={config.AI_MAX_TOKENS}"
+            f"max_tokens={max_tokens if max_tokens is not None else config.AI_MAX_TOKENS}"
         )
     except Exception as exc:  # pylint: disable=broad-except
         return f"(could not describe the empty reply: {type(exc).__name__})"
+
+
+def _needs_rescue(content: Optional[str], response: object) -> bool:
+    """True when the first reply is unusable because the budget ran out: empty, or cut off mid-answer
+    (finish_reason == "length" and the content does not parse as the review JSON)."""
+    if not (content or "").strip():
+        return True
+    try:
+        finish = getattr(response.choices[0], "finish_reason", None)  # type: ignore[attr-defined]
+    except Exception:  # pylint: disable=broad-except
+        return False
+    if finish != "length":
+        return False
+    try:
+        _parse_review_json(_restore_defanged(content))
+    except ValueError:
+        return True
+    return False
 
 
 def _parse_review_json(raw: Optional[str]) -> dict:
@@ -781,7 +802,7 @@ restate it at a higher severity than shown here.
 {closing_instruction}
 """
 
-    rescued: list = []  # models whose answer came from the bounded-reasoning rescue retry
+    first_calls: dict = {}  # (id(client), model) -> (client, response) of the full-budget call, see _make_request
 
     def _make_request(client: OpenAI, model: str) -> dict:
         # Z13's Ollama-served models (config.QA_FALLBACK_MODEL) default
@@ -825,15 +846,24 @@ restate it at a higher severity than shown here.
             ))},
             {"role": "user", "content": _defang_template_tokens(user_msg)},
         ]
-        response = _chat_completion(
-            client,
-            model=model,
-            messages=messages,
-            max_tokens=config.AI_MAX_TOKENS,
-            temperature=0.1,
-            extra_body=extra_body,
-            response_format=response_format,
-        )
+        # The full-budget call's response is kept per (client, model): _call_with_retry re-runs this whole function on
+        # a 5xx/429, and if only the rescue call below failed, repeating the (up to 8000-token, minutes-long) first
+        # call would multiply the real cost far past the documented bound.
+        cache_key = (id(client), model)
+        cached = first_calls.get(cache_key)
+        if cached is not None and cached[0] is client:
+            response = cached[1]
+        else:
+            response = _chat_completion(
+                client,
+                model=model,
+                messages=messages,
+                max_tokens=config.AI_MAX_TOKENS,
+                temperature=0.1,
+                extra_body=extra_body,
+                response_format=response_format,
+            )
+            first_calls[cache_key] = (client, response)
         # JSON parsing happens HERE, inside the per-provider attempt --
         # see _parse_review_json's docstring for why this must not happen
         # after _call_with_fallback returns. Pass content through
@@ -849,10 +879,12 @@ restate it at a higher severity than shown here.
             if salvaged is not None:
                 print(f"[agent] review JSON recovered from the reasoning field of {model}", file=sys.stderr)
                 content = salvaged
-        if (not (content or "").strip() and model == config.QA_FALLBACK_MODEL
+        used_rescue = False
+        if (_needs_rescue(content, response) and model == config.QA_FALLBACK_MODEL
                 and config.AI_RESCUE_REASONING_EFFORT):
-            # The thinking used the whole budget and there was nothing to salvage. Ask once more with reasoning
-            # limited, so the review ends with an answer after a bounded amount of thinking (see config.py).
+            # The thinking used the whole budget (empty reply, or an answer cut off mid-JSON at finish_reason=length)
+            # and there was nothing to salvage. Ask once more with reasoning limited, so the review ends with an
+            # answer after a bounded amount of thinking (see config.py).
             print(f"[agent] retrying {model} once with reasoning_effort={config.AI_RESCUE_REASONING_EFFORT} "
                   f"and max_tokens={config.AI_RESCUE_MAX_TOKENS}", file=sys.stderr)
             rescue = _chat_completion(
@@ -866,11 +898,18 @@ restate it at a higher severity than shown here.
             )
             content = rescue.choices[0].message.content
             if not (content or "").strip():
-                print(f"[agent] rescue attempt also empty: {_describe_empty_reply(rescue)}", file=sys.stderr)
+                print(f"[agent] rescue attempt also empty: "
+                      f"{_describe_empty_reply(rescue, max_tokens=config.AI_RESCUE_MAX_TOKENS)}", file=sys.stderr)
                 content = _salvage_review_json(_restore_defanged(_reasoning_text(rescue.choices[0].message)) or "")
-            if (content or "").strip():
-                rescued.append(model)
-        return _parse_review_json(_restore_defanged(content))
+            used_rescue = bool((content or "").strip())
+        data = _parse_review_json(_restore_defanged(content))
+        if used_rescue:
+            # A no-thinking model under constrained decoding readily emits a bare "{}" or a summary with no findings
+            # list; accepting that would turn a rescued reply into a false clean pass. Require the review's shape.
+            if "summary" not in data or not isinstance(data.get("findings"), list):
+                raise json.JSONDecodeError("rescue reply lacks the review's summary/findings", content or "", 0)
+            data["_reduced_depth"] = True
+        return data
 
     try:
         data, review.provider, review.provider_model = _call_with_fallback(_make_request)
@@ -894,7 +933,8 @@ restate it at a higher severity than shown here.
         return review
 
     review.summary = data.get("summary", "")
-    if rescued and review.provider_model in rescued:
+    if data.pop("_reduced_depth", False):
+        review.reduced_depth = True
         review.summary = ("(Reduced-depth review: the model's first attempt spent its whole token budget "
                           "reasoning, so it was re-asked once with reasoning limited.) " + review.summary)
     review.architecture_notes = data.get("architecture_notes", "")
