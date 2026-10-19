@@ -302,3 +302,7 @@ ai:
                          # warning and the run can still pass; default true = it makes the run ERRORED (exit 2).
 ```
 Static-analysis tool errors always make the run ERRORED, whatever these are set to.
+
+### Bounded reasoning (optional)
+
+A reasoning model can spend the whole `QA_AI_MAX_TOKENS` budget thinking and never write the review, which comes back empty. Set `QA_AI_RESCUE_REASONING_EFFORT` (e.g. `none`) to have `QA_FALLBACK_MODEL` re-asked **once** in that case, with that reasoning level and `QA_AI_RESCUE_MAX_TOKENS` (default 2500). Total thinking is then bounded at `QA_AI_MAX_TOKENS + QA_AI_RESCUE_MAX_TOKENS`, and a rescued review is labelled "Reduced-depth review". Off by default.
