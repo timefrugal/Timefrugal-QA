@@ -11,6 +11,9 @@ from qa_agent.repo_config import RepoConfig
 from qa_agent.static_analysis import AnalysisResults
 
 
+_REAL_SET_COMMIT_STATUS = pr_reporter.set_commit_status  # setUp below patches the module attribute
+
+
 def _f(sev, cat):
     return AIFinding(severity=sev, category=cat, file="a.py", line=1, message="m", suggestion="s")
 
@@ -37,6 +40,17 @@ class TestHasBlockingIssuesScope(unittest.TestCase):
         r = AIReview(findings=[_f("HIGH", " Security ")], ai_blocking=True, ai_blocking_scope="security")
         self.assertTrue(r.has_blocking_issues)
 
+    def test_security_scope_fails_closed_on_synonyms_unknowns_and_non_strings(self):
+        for cat in ("vulnerability", "Security Vulnerability", "security/injection", "secrets", "injection", "xss",
+                    "auth", "", None, ["security"], 7):
+            r = AIReview(findings=[_f("CRITICAL", cat)], ai_blocking=True, ai_blocking_scope="security")
+            self.assertTrue(r.has_blocking_issues, repr(cat))  # and never raises
+
+    def test_security_scope_stays_advisory_for_every_known_non_security_category(self):
+        for cat in ("bug", "Architecture", " design ", "performance", "quality", "test"):
+            r = AIReview(findings=[_f("CRITICAL", cat)], ai_blocking=True, ai_blocking_scope="security")
+            self.assertFalse(r.has_blocking_issues, repr(cat))
+
     def test_blocking_off_never_blocks_whatever_the_scope(self):
         r = AIReview(findings=[_f("CRITICAL", "security")], ai_blocking=False, ai_blocking_scope="security")
         self.assertFalse(r.has_blocking_issues)
@@ -60,6 +74,10 @@ class TestReviewCodeCarriesRepoConfig(unittest.TestCase):
         self.assertEqual(review.ai_blocking_scope, "security")
         self.assertFalse(review.ai_errors_block)
         self.assertTrue(review.errors)  # "No file contents provided" is still reported
+
+    def test_errors_block_false_is_carried_even_when_ai_blocking_is_off(self):
+        review = air.review_code({}, "python", "", repo_config=RepoConfig(ai_blocking=False, ai_errors_block=False))
+        self.assertFalse(review.ai_errors_block)
 
     def test_no_repo_config_keeps_the_original_defaults(self):
         review = air.review_code({}, "python", "")
@@ -96,10 +114,11 @@ class TestRunExitCodeAndComment(unittest.TestCase):
         rc = self._rc(AnalysisResults(errors=["bandit: not found"]), AIReview(ai_errors_block=False))
         self.assertEqual(rc, 2)
 
-    def test_a_security_finding_still_blocks_with_exit_1_alongside_an_ai_failure(self):
-        ai = AIReview(findings=[_f("HIGH", "security")], errors=["part failed"], ai_blocking=True,
-                      ai_blocking_scope="security", ai_errors_block=False)
-        self.assertEqual(self._rc(AnalysisResults(), ai), 1)
+    def test_a_static_block_still_exits_1_when_the_ai_review_failed_and_is_non_blocking(self):
+        from qa_agent.static_analysis import Finding
+        static = AnalysisResults(findings=[Finding(tool="bandit", severity="CRITICAL", category="security",
+                                                   file="a.py", line=1, message="m")])
+        self.assertEqual(self._rc(static, AIReview(errors=["empty"], ai_errors_block=False)), 1)
 
     def test_a_non_security_ai_high_is_advisory_exit_0_under_security_scope(self):
         ai = AIReview(findings=[_f("HIGH", "bug")], ai_blocking=True, ai_blocking_scope="security")
@@ -110,6 +129,36 @@ class TestRunExitCodeAndComment(unittest.TestCase):
         self.assertIn("AI review unavailable", body)
         self.assertNotIn("ERRORED", body)
         self.assertIn("empty", body)  # the failure is still listed under Tool Warnings
+
+    def test_commit_status_does_not_claim_a_clean_pass_when_ai_was_unavailable(self):
+        calls = []
+        with mock.patch.object(pr_reporter, "set_commit_status", side_effect=lambda **kw: calls.append(kw) or True):
+            self._rc(AnalysisResults(), AIReview(errors=["empty"], ai_errors_block=False))
+        self.assertTrue(calls[-1]["ai_unavailable"])
+
+    def test_commit_status_description_for_the_advisory_case(self):
+        posted = {}
+
+        class R:
+            status_code = 201
+            text = ""
+
+        def fake_post(url, **kw):
+            posted.update(kw["json"])
+            return R()
+
+        with mock.patch.object(pr_reporter.config, "GITHUB_REPOSITORY", "o/r"), \
+             mock.patch.object(pr_reporter.config, "GITHUB_SHA", "abc"), \
+             mock.patch.object(pr_reporter, "_request_with_retry", lambda f, url, **kw: fake_post(url, **kw)):
+            _REAL_SET_COMMIT_STATUS(blocked=False, errored=False, ai_unavailable=True)
+        self.assertEqual(posted["state"], "success")
+        self.assertIn("AI review unavailable", posted["description"])
+
+    def test_a_clean_run_status_is_unchanged(self):
+        calls = []
+        with mock.patch.object(pr_reporter, "set_commit_status", side_effect=lambda **kw: calls.append(kw) or True):
+            self._rc(AnalysisResults(), AIReview())
+        self.assertFalse(calls[-1]["ai_unavailable"])
 
     def test_comment_still_says_errored_by_default(self):
         body = pr_reporter._build_comment(AnalysisResults(), AIReview(errors=["empty"]), "")

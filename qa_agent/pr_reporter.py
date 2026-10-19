@@ -123,7 +123,8 @@ def post_pr_comment(
     return True
 
 
-def set_commit_status(blocked: bool, errored: bool = False, description: str = "") -> bool:
+def set_commit_status(blocked: bool, errored: bool = False, description: str = "",
+                      ai_unavailable: bool = False) -> bool:
     """
     Set a GitHub commit status check (success/failure/error).
     Returns True on success.
@@ -144,6 +145,8 @@ def set_commit_status(blocked: bool, errored: bool = False, description: str = "
         if blocked
         else "QA could not fully run — tool failures. Review the PR comment."
         if errored
+        else "Static checks passed; AI review unavailable (advisory) — see PR comment"
+        if ai_unavailable
         else "All QA checks passed ✅"
     )
 

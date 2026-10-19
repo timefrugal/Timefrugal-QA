@@ -137,8 +137,13 @@ def load_repo_config(project_root: str) -> RepoConfig:
     raw_blocking = ai.get("blocking", False)
     ai_blocking_scope = "all"
     if isinstance(raw_blocking, str):
-        if raw_blocking.strip().lower() == "security":
+        word = raw_blocking.strip().lower()
+        if word == "security":
             ai_blocking, ai_blocking_scope = True, "security"
+        elif word in ("true", "yes", "on", "1", "all"):
+            ai_blocking = True  # a quoted "true" used to be truthy too; keep it blocking
+        elif word in ("false", "no", "off", "0", ""):
+            ai_blocking = False
         else:
             print(f"[repo_config] {path}: 'ai.blocking' is not true/false/'security' (got {raw_blocking!r}) -- ignoring",
                   file=sys.stderr)

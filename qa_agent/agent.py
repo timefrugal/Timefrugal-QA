@@ -317,7 +317,9 @@ def _report_ci(pr_number, static_results, ai_review, generated_tests, blocked, e
         print("[agent] Posting PR comment...")
         post_pr_comment(pr_number, static_results, ai_review, generated_tests)
     print("[agent] Setting commit status check...")
-    set_commit_status(blocked=blocked, errored=errored)
+    # A failed AI review that the repo made non-blocking must not read as a clean pass in the status line.
+    ai_unavailable = bool(ai_review.errors) and not ai_review.blocking_errors
+    set_commit_status(blocked=blocked, errored=errored, ai_unavailable=ai_unavailable)
     write_step_summary(static_results, ai_review, generated_tests)
 
 

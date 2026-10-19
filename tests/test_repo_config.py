@@ -508,6 +508,18 @@ class TestAiBlockingScopeAndErrorsBlock(unittest.TestCase):
         self.assertTrue(self._load("ai:\n  blocking: true\n").ai_errors_block)
         self.assertTrue(RepoConfig().ai_errors_block)
 
+    def test_empty_null_zero_and_quoted_false_errors_block_all_fall_back_to_true(self):
+        for raw in ("", "null", "0", '"false"', "nope"):
+            self.assertTrue(self._load(f"ai:\n  errors_block: {raw}\n").ai_errors_block, raw)
+
+    def test_quoted_truthy_blocking_strings_still_block_and_quoted_falsy_do_not(self):
+        for raw in ('"true"', '"yes"', '"on"', '"1"', '"all"'):
+            cfg = self._load(f"ai:\n  blocking: {raw}\n")
+            self.assertTrue(cfg.ai_blocking, raw)
+            self.assertEqual(cfg.ai_blocking_scope, "all")
+        for raw in ('"false"', '"no"', '"off"', '"0"', '""'):
+            self.assertFalse(self._load(f"ai:\n  blocking: {raw}\n").ai_blocking, raw)
+
     def test_errors_block_false_is_read(self):
         self.assertFalse(self._load("ai:\n  errors_block: false\n").ai_errors_block)
 
