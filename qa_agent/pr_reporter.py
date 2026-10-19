@@ -124,7 +124,7 @@ def post_pr_comment(
 
 
 def set_commit_status(blocked: bool, errored: bool = False, description: str = "",
-                      ai_unavailable: bool = False) -> bool:
+                      ai_unavailable: bool = False, ai_reduced_depth: bool = False) -> bool:
     """
     Set a GitHub commit status check (success/failure/error).
     Returns True on success.
@@ -147,6 +147,8 @@ def set_commit_status(blocked: bool, errored: bool = False, description: str = "
         if errored
         else "Static checks passed; AI review unavailable (advisory) — see PR comment"
         if ai_unavailable
+        else "Checks passed; AI review ran at reduced depth (lighter pass) — see PR comment"
+        if ai_reduced_depth
         else "All QA checks passed ✅"
     )
 
@@ -213,6 +215,8 @@ def _build_comment(
         if errored
         else "## ✅ Timefrugal-QA — Checks passed (AI review unavailable — advisory only, not blocking)"
         if ai_unavailable_advisory
+        else "## ✅ Timefrugal-QA — Checks passed (AI review ran at reduced depth — a lighter pass)"
+        if ai.reduced_depth
         else "## ✅ Timefrugal-QA — All checks passed"
     )
 
