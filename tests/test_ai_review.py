@@ -140,6 +140,26 @@ class TestPerFileCharBudgetKeepsTotalPromptSizeBounded(unittest.TestCase):
         self.assertEqual(_per_file_char_budget(0, per_file_cap=6000), 6000)
 
 
+# The consumers' CI exports QA_AI_STREAM=1, QA_AI_RESCUE_REASONING_EFFORT, QA_FALLBACK_REASONING_EFFORT and the retry /
+# timeout knobs. These tests were written against the library defaults (non-streaming fake clients, no rescue), so pin
+# the env-derived settings to those defaults for this module instead of inheriting whatever the shell exported (#49).
+_ENV_DEFAULTS = {"AI_STREAM": False, "AI_RESCUE_REASONING_EFFORT": "", "QA_FALLBACK_REASONING_EFFORT": "",
+                 "AI_CLIENT_MAX_RETRIES": None, "AI_REQUEST_TIMEOUT_SEC": None}
+_env_patches: list = []
+
+
+def setUpModule():
+    for name, value in _ENV_DEFAULTS.items():
+        patcher = mock.patch.object(config, name, value)
+        patcher.start()
+        _env_patches.append(patcher)
+
+
+def tearDownModule():
+    while _env_patches:
+        _env_patches.pop().stop()
+
+
 def _fake_provider(name, api_key="key-set", model=None, base_url=None):
     return {
         "name": name,
@@ -1557,3 +1577,7 @@ class TestOptInStreaming(unittest.TestCase):
                 importlib.reload(config)
                 self.assertEqual(config.AI_STREAM, want, val)
         importlib.reload(config)
+        # reload() re-reads the ambient environment (the consumers' CI exports QA_AI_STREAM=1 ...), which would undo the
+        # module-level pins for every later test in this module -- put them back (#49).
+        for name, value in _ENV_DEFAULTS.items():
+            setattr(config, name, value)
