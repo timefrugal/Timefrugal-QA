@@ -123,7 +123,8 @@ def post_pr_comment(
     return True
 
 
-def set_commit_status(blocked: bool, errored: bool = False, description: str = "") -> bool:
+def set_commit_status(blocked: bool, errored: bool = False, description: str = "",
+                      ai_unavailable: bool = False) -> bool:
     """
     Set a GitHub commit status check (success/failure/error).
     Returns True on success.
@@ -144,6 +145,8 @@ def set_commit_status(blocked: bool, errored: bool = False, description: str = "
         if blocked
         else "QA could not fully run — tool failures. Review the PR comment."
         if errored
+        else "Static checks passed; AI review unavailable (advisory) — see PR comment"
+        if ai_unavailable
         else "All QA checks passed ✅"
     )
 
@@ -194,7 +197,8 @@ def _build_comment(
     generated_tests: str,
 ) -> str:
     blocked = static.has_blocking_issues or ai.has_blocking_issues
-    errored = bool(static.errors or ai.errors)
+    errored = bool(static.errors or ai.blocking_errors)
+    ai_unavailable_advisory = bool(ai.errors) and not ai.blocking_errors
     threshold = effective_block_threshold(static, ai.has_blocking_issues)
     status_line = (
         f"## 🔴 Timefrugal-QA — BLOCKED: {blocking_severity_label(threshold)} "
@@ -207,6 +211,8 @@ def _build_comment(
         if blocked
         else "## ⚠️ Timefrugal-QA — ERRORED: analysis tools failed, results incomplete"
         if errored
+        else "## ✅ Timefrugal-QA — Checks passed (AI review unavailable — advisory only, not blocking)"
+        if ai_unavailable_advisory
         else "## ✅ Timefrugal-QA — All checks passed"
     )
 

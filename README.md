@@ -289,3 +289,16 @@ To change the blocking threshold, set it per-repo — **don't** edit `config.py`
 block_merge_threshold: MEDIUM   # stricter
 ```
 or set the `QA_BLOCK_MERGE_THRESHOLD` env var (same values: `CRITICAL`/`HIGH`/`MEDIUM`/`LOW`). The per-repo config takes precedence over the env var, which takes precedence over the built-in default (`HIGH`).
+
+### How much the AI review is trusted (per repo)
+
+The static analyzers are deterministic; the AI reviewer is a model that can be wrong, slow or unavailable. Two opt-in settings in `.timefrugal-qa.yml` keep it from stopping merges for the wrong reasons:
+```yaml
+ai:
+  blocking: security     # true = any CRITICAL/HIGH AI finding blocks (original opt-in);
+                         # security = only CRITICAL/HIGH findings categorised "security" block, the rest stay advisory;
+                         # false/absent = AI findings never block. A misspelt value is treated as false.
+  errors_block: false    # false = a FAILED AI review (all providers errored, empty reply, bad JSON) is reported as a
+                         # warning and the run can still pass; default true = it makes the run ERRORED (exit 2).
+```
+Static-analysis tool errors always make the run ERRORED, whatever these are set to.

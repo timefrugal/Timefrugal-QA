@@ -25,6 +25,13 @@ _VALID_SEVERITIES = set(config.SEVERITY_ORDER)
 @dataclass
 class RepoConfig:
     ai_blocking: bool = False
+    # Which AI findings may block when ai_blocking is on: "all" (any CRITICAL/HIGH, the original behaviour) or
+    # "security" (only CRITICAL/HIGH findings the reviewer categorised as security; everything else stays advisory).
+    ai_blocking_scope: str = "all"
+    # Whether a FAILED AI review (every provider errored, empty reply, bad JSON) makes the run ERRORED. True is the
+    # original behaviour. False reports the failure as a warning only -- a flaky reviewer says nothing about the
+    # code, so it should not stop a merge by itself. Static-analysis tool errors always count either way.
+    ai_errors_block: bool = True
     block_merge_threshold: Optional[str] = None  # None = use config.py's default
     severity_overrides: Dict = field(default_factory=dict)  # {tool: {category: severity}}
     ignore: Dict = field(default_factory=dict)  # {tool: [rule_id, ...]}
@@ -125,8 +132,32 @@ def load_repo_config(project_root: str) -> RepoConfig:
         data.get("block_merge_threshold"), "block_merge_threshold", path
     )
     extra_instructions = _as_str(ai.get("extra_instructions", ""), "ai.extra_instructions", path)
+    # `ai.blocking`: true | false | "security". Anything else (a typo such as "secuirty") is treated as false and
+    # warned about, never as true -- a misspelling must not silently turn AI findings into merge blockers.
+    raw_blocking = ai.get("blocking", False)
+    ai_blocking_scope = "all"
+    if isinstance(raw_blocking, str):
+        word = raw_blocking.strip().lower()
+        if word == "security":
+            ai_blocking, ai_blocking_scope = True, "security"
+        elif word in ("true", "yes", "on", "1", "all"):
+            ai_blocking = True  # a quoted "true" used to be truthy too; keep it blocking
+        elif word in ("false", "no", "off", "0", ""):
+            ai_blocking = False
+        else:
+            print(f"[repo_config] {path}: 'ai.blocking' is not true/false/'security' (got {raw_blocking!r}) -- ignoring",
+                  file=sys.stderr)
+            ai_blocking = False
+    else:
+        ai_blocking = bool(raw_blocking)
+    ai_errors_block = ai.get("errors_block", True)
+    if not isinstance(ai_errors_block, bool):
+        print(f"[repo_config] {path}: 'ai.errors_block' is not a boolean -- using true", file=sys.stderr)
+        ai_errors_block = True
     return RepoConfig(
-        ai_blocking=bool(ai.get("blocking", False)),
+        ai_blocking=ai_blocking,
+        ai_blocking_scope=ai_blocking_scope,
+        ai_errors_block=ai_errors_block,
         block_merge_threshold=block_merge_threshold,
         severity_overrides=severity_overrides,
         ignore=ignore,

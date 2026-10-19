@@ -47,6 +47,18 @@ class AIFinding:
     suggestion: str
 
 
+# Categories the review prompt offers that are definitely NOT security. Under `ai.blocking: security` a CRITICAL/HIGH
+# finding is advisory only if its category is one of these; anything else -- "security", a synonym the model made up
+# ("vulnerability", "injection", "secrets", "xss"), a non-string, empty -- is treated as possibly security and still
+# blocks. Fail closed: the model is only asked for a category in the prompt (providers other than the fallback get no
+# schema at all), so a real injection finding must not slip through on a spelling.
+_NON_SECURITY_CATEGORIES = frozenset({"bug", "architecture", "design", "performance", "quality", "test"})
+
+
+def _may_be_security(category) -> bool:
+    return str(category or "").strip().lower() not in _NON_SECURITY_CATEGORIES
+
+
 @dataclass
 class AIReview:
     summary: str = ""
@@ -59,6 +71,10 @@ class AIReview:
     # true` (H1: AI findings shouldn't independently block with unvalidated
     # severity). Set by review_code() from the repo_config it was given.
     ai_blocking: bool = False
+    # "all" | "security" -- see RepoConfig.ai_blocking_scope. Only meaningful when ai_blocking is True.
+    ai_blocking_scope: str = "all"
+    # See RepoConfig.ai_errors_block.
+    ai_errors_block: bool = True
     # Which configured provider (config.AI_PROVIDERS entry name -- "groq",
     # "cerebras", "mistral", or "fallback") and model actually answered,
     # set by review_code() from _call_with_fallback's return. Empty when no
@@ -76,8 +92,15 @@ class AIReview:
             return False
         return any(
             f.severity in (config.SEVERITY_CRITICAL, config.SEVERITY_HIGH)
+            and (self.ai_blocking_scope != "security" or _may_be_security(f.category))
             for f in self.findings
         )
+
+    @property
+    def blocking_errors(self) -> List[str]:
+        """The AI-review errors that should make the run ERRORED: all of them by default, none when the repo set
+        `ai.errors_block: false` (the failure is still in `errors`, so reporters show it as a warning)."""
+        return list(self.errors) if self.ai_errors_block else []
 
 
 # ──────────────────────────────────────────────
@@ -682,7 +705,11 @@ def review_code(
     why both halves matter -- prompt-only was not reliable enough on its
     own (jarvis-infra issues #306/#307/#310).
     """
-    review = AIReview(ai_blocking=bool(repo_config.ai_blocking) if repo_config else False)
+    review = AIReview(
+        ai_blocking=bool(repo_config.ai_blocking) if repo_config else False,
+        ai_blocking_scope=repo_config.ai_blocking_scope if repo_config else "all",
+        ai_errors_block=repo_config.ai_errors_block if repo_config else True,
+    )
 
     if not file_contents:
         review.errors.append("No file contents provided for AI review.")
