@@ -197,6 +197,17 @@ QA_FALLBACK_RESPONSE_FORMAT = os.getenv(
 # behavior change; only one that has hit this specific gap needs to set it.
 QA_FALLBACK_REASONING_EFFORT = os.getenv("QA_FALLBACK_REASONING_EFFORT", "").strip()
 
+# Bounded-reasoning rescue for QA_FALLBACK_MODEL. A reasoning model can spend the WHOLE QA_AI_MAX_TOKENS budget
+# thinking and never write the answer (maya-infra#239: reasoning_len=18854, completion_tokens at the cap, content
+# empty -> the run ERRORED). max_tokens is the hard cap on the thinking, but it also caps the answer, so a cap high
+# enough for the answer lets the thinking run long and a low cap starves the answer. When this is set (e.g. "none"),
+# an empty reply that could not be salvaged from the reasoning field is retried ONCE with that reasoning_effort and
+# a small QA_AI_RESCUE_MAX_TOKENS, so every review ends with an answer after a fixed, bounded amount of thinking:
+# at most QA_AI_MAX_TOKENS + QA_AI_RESCUE_MAX_TOKENS tokens. The rescued review is labelled "reduced-depth" in its
+# summary. Empty (off) by default -- no behaviour change unless a repo opts in.
+AI_RESCUE_REASONING_EFFORT = os.getenv("QA_AI_RESCUE_REASONING_EFFORT", "").strip()
+AI_RESCUE_MAX_TOKENS = int(os.getenv("QA_AI_RESCUE_MAX_TOKENS", "2500"))
+
 # Provider chain, tried in this order by ai_review._call_with_fallback. A
 # provider whose API key env var isn't set is skipped, not an error --
 # consumer repos can add CEREBRAS_API_KEY/MISTRAL_API_KEY/GEMINI_API_KEY/

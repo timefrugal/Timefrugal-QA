@@ -781,6 +781,8 @@ restate it at a higher severity than shown here.
 {closing_instruction}
 """
 
+    rescued: list = []  # models whose answer came from the bounded-reasoning rescue retry
+
     def _make_request(client: OpenAI, model: str) -> dict:
         # Z13's Ollama-served models (config.QA_FALLBACK_MODEL) default
         # "thinking" ON; without an explicit think:false, a model with the
@@ -817,15 +819,16 @@ restate it at a higher severity than shown here.
             if model == config.QA_FALLBACK_MODEL and config.QA_FALLBACK_RESPONSE_FORMAT
             else openai.omit
         )
+        messages = [
+            {"role": "system", "content": _defang_template_tokens(_get_review_prompt(
+                language, repo_config.extra_instructions if repo_config else ""
+            ))},
+            {"role": "user", "content": _defang_template_tokens(user_msg)},
+        ]
         response = _chat_completion(
             client,
             model=model,
-            messages=[
-                {"role": "system", "content": _defang_template_tokens(_get_review_prompt(
-                    language, repo_config.extra_instructions if repo_config else ""
-                ))},
-                {"role": "user", "content": _defang_template_tokens(user_msg)},
-            ],
+            messages=messages,
             max_tokens=config.AI_MAX_TOKENS,
             temperature=0.1,
             extra_body=extra_body,
@@ -846,6 +849,27 @@ restate it at a higher severity than shown here.
             if salvaged is not None:
                 print(f"[agent] review JSON recovered from the reasoning field of {model}", file=sys.stderr)
                 content = salvaged
+        if (not (content or "").strip() and model == config.QA_FALLBACK_MODEL
+                and config.AI_RESCUE_REASONING_EFFORT):
+            # The thinking used the whole budget and there was nothing to salvage. Ask once more with reasoning
+            # limited, so the review ends with an answer after a bounded amount of thinking (see config.py).
+            print(f"[agent] retrying {model} once with reasoning_effort={config.AI_RESCUE_REASONING_EFFORT} "
+                  f"and max_tokens={config.AI_RESCUE_MAX_TOKENS}", file=sys.stderr)
+            rescue = _chat_completion(
+                client,
+                model=model,
+                messages=messages,
+                max_tokens=config.AI_RESCUE_MAX_TOKENS,
+                temperature=0.1,
+                extra_body={"reasoning_effort": config.AI_RESCUE_REASONING_EFFORT},
+                response_format=response_format,
+            )
+            content = rescue.choices[0].message.content
+            if not (content or "").strip():
+                print(f"[agent] rescue attempt also empty: {_describe_empty_reply(rescue)}", file=sys.stderr)
+                content = _salvage_review_json(_restore_defanged(_reasoning_text(rescue.choices[0].message)) or "")
+            if (content or "").strip():
+                rescued.append(model)
         return _parse_review_json(_restore_defanged(content))
 
     try:
@@ -870,6 +894,9 @@ restate it at a higher severity than shown here.
         return review
 
     review.summary = data.get("summary", "")
+    if rescued and review.provider_model in rescued:
+        review.summary = ("(Reduced-depth review: the model's first attempt spent its whole token budget "
+                          "reasoning, so it was re-asked once with reasoning limited.) " + review.summary)
     review.architecture_notes = data.get("architecture_notes", "")
 
     for item in data.get("findings", []):
